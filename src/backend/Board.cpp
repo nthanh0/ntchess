@@ -2,6 +2,7 @@
 #include "misc.h"
 #include "types.h"
 #include <cstdlib>
+#include <sstream>
 
 Board::Board() {
     for (int i = 0; i < 64; i++) {
@@ -33,6 +34,54 @@ void Board::setup_pieces() {
     for (int i = 48; i < 56; i++) {
         board[i] = B_PAWN;
     }
+}
+
+bool Board::setup_fen(const std::string& fen) {
+    clear_board();
+    state_history.clear();
+    state_history.push_back(StateInfo());
+    StateInfo& si = state_history.back();
+
+    std::istringstream ss(fen);
+    std::string placement, sideStr, castling, epStr;
+    int halfmove = 0;
+    ss >> placement >> sideStr >> castling >> epStr >> halfmove;
+
+    // Parse piece placement (FEN lists rank 8 first, rank 1 last)
+    int rank = 7, file = 0;
+    for (char c : placement) {
+        if (c == '/') { rank--; file = 0; }
+        else if (c >= '1' && c <= '8') { file += c - '0'; }
+        else {
+            Piece p = NO_PIECE;
+            switch (c) {
+            case 'K': p = W_KING;   break; case 'Q': p = W_QUEEN;  break;
+            case 'R': p = W_ROOK;   break; case 'B': p = W_BISHOP; break;
+            case 'N': p = W_KNIGHT; break; case 'P': p = W_PAWN;   break;
+            case 'k': p = B_KING;   break; case 'q': p = B_QUEEN;  break;
+            case 'r': p = B_ROOK;   break; case 'b': p = B_BISHOP; break;
+            case 'n': p = B_KNIGHT; break; case 'p': p = B_PAWN;   break;
+            default: break;
+            }
+            board[rank * 8 + file] = p;
+            file++;
+        }
+    }
+
+    // Castling rights
+    si.white_can_castle_kingside  = castling.find('K') != std::string::npos;
+    si.white_can_castle_queenside = castling.find('Q') != std::string::npos;
+    si.black_can_castle_kingside  = castling.find('k') != std::string::npos;
+    si.black_can_castle_queenside = castling.find('q') != std::string::npos;
+
+    // En-passant file
+    si.en_passant_file = -1;
+    if (!epStr.empty() && epStr[0] >= 'a' && epStr[0] <= 'h')
+        si.en_passant_file = epStr[0] - 'a';
+
+    si.halfmove_clock = halfmove;
+
+    return sideStr == "b"; // true if black to move
 }
 
 Piece Board::get_piece(int file, int rank) const {

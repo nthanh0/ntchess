@@ -2,6 +2,8 @@
 #include "movegen.h"
 #include "misc.h"
 #include <cctype>
+#include <ctime>
+#include <sstream>
 
 #include "Game.h"
 
@@ -278,14 +280,79 @@ Move uci_to_move(const std::string& uci, Board& board, Color turn) {
     return invalid;
 }
 
-std::string game_to_pgn(const Game& game) {
-    std::string pgn = "";
-    const std::vector<std::string>& san_moves = game.get_move_history_san();
-    for (size_t i = 0; i < san_moves.size(); i++) {
-        if (i % 2 == 0) {
-            pgn += std::to_string(i / 2 + 1) + ". ";
-        }
-        pgn += san_moves[i] + " ";
+std::string game_to_pgn(const Game& game,
+                         const std::string& whitePlayer,
+                         const std::string& blackPlayer,
+                         const std::string& eventName,
+                         const std::string& siteName) {
+    // ── result string ────────────────────────────────────────────────────
+    std::string result;
+    switch (game.get_game_status()) {
+    case CHECKMATE:
+    case TIMEOUT:
+        // currentTurn() is the side that lost (was mated / ran out of time)
+        result = (game.get_turn() == BLACK) ? "1-0" : "0-1";
+        break;
+    case STALEMATE:
+    case DRAW_BY_REPETITION:
+    case DRAW_BY_FIFTY_MOVE_RULE:
+    case DRAW_BY_INSUFFICIENT_MATERIAL:
+        result = "1/2-1/2";
+        break;
+    default:
+        result = "*";
+        break;
     }
+
+    // ── date (YYYY.MM.DD) ────────────────────────────────────────────────
+    std::time_t t = std::time(nullptr);
+    std::tm* tm = std::localtime(&t);
+    char dateBuf[16];
+    std::strftime(dateBuf, sizeof(dateBuf), "%Y.%m.%d", tm);
+
+    // ── seven-tag roster ─────────────────────────────────────────────────
+    std::string pgn;
+    pgn += "[Event \"" + eventName   + "\"]\n";
+    pgn += "[Site \""  + siteName    + "\"]\n";
+    pgn += "[Date \""  + std::string(dateBuf) + "\"]\n";
+    pgn += "[Round \"?\"]\n";
+    pgn += "[White \"" + whitePlayer + "\"]\n";
+    pgn += "[Black \"" + blackPlayer + "\"]\n";
+    pgn += "[Result \"" + result + "\"]\n";
+
+    // optional SetUp / FEN tags for non-standard starting positions
+    if (!game.start_fen().empty()) {
+        pgn += "[SetUp \"1\"]\n";
+        pgn += "[FEN \"" + game.start_fen() + "\"]\n";
+    }
+
+    pgn += '\n';
+
+    // ── move text ────────────────────────────────────────────────────────
+    const std::vector<std::string>& san_moves = game.get_move_history_san();
+    int col = 0;
+    for (size_t i = 0; i < san_moves.size(); i++) {
+        std::string token;
+        if (i % 2 == 0)
+            token = std::to_string(i / 2 + 1) + ". " + san_moves[i];
+        else
+            token = san_moves[i];
+
+        // Wrap at ~80 chars
+        if (col > 0 && col + 1 + (int)token.size() > 80) {
+            pgn += '\n';
+            col = 0;
+        } else if (col > 0) {
+            pgn += ' ';
+            col++;
+        }
+        pgn += token;
+        col += (int)token.size();
+    }
+
+    if (!san_moves.empty()) { pgn += ' '; col++; }
+    if (col + (int)result.size() > 80) pgn += '\n';
+    pgn += result + '\n';
+
     return pgn;
 }

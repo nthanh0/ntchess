@@ -14,6 +14,13 @@ public:
 
     Game();
 
+    // Load a position from a FEN string instead of the standard starting position.
+    // Must be called before any moves are made.
+    bool set_start_fen(const std::string& fen);
+
+    // Returns the FEN string passed to set_start_fen(), or "" for startpos.
+    const std::string& start_fen() const { return start_fen_; }
+
     const Board&   get_board()  const;
     Color          get_turn()   const;
     GameStatus     get_game_status() const;
@@ -49,10 +56,15 @@ public:
     // Check if clocks are set up
     bool has_clocks() const { return clocks_set_; }
 
+    // Poll from the UI timer: if the active clock has expired, set status=TIMEOUT.
+    // Returns true if a timeout was just detected.
+    bool flag_if_timed_out();
+
 private:
     Board board;
     Color turn = WHITE;
     GameStatus status = ONGOING;
+    std::string start_fen_; // empty = standard starting position
     std::vector<Move> move_history;
     std::vector<std::string> move_history_san;
 

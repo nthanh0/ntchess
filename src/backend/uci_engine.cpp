@@ -2,16 +2,11 @@
 #include "notation.h"
 
 #include <algorithm>
-
-#include <chrono>
-#include <cstring>
 #include <sstream>
 
-// POSIX
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/wait.h>
-#include <unistd.h>
+#include <QStringList>
+#include <QDebug>
+#include <QElapsedTimer>
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -62,6 +57,7 @@ UCIEngine::UCIEngine() = default;
 
 UCIEngine::~UCIEngine() {
     if (is_running()) quit();
+    delete process_;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,144 +67,68 @@ bool UCIEngine::start(const std::string& path,
                       const std::vector<std::string>& args) {
     if (is_running()) return false;
 
-    // pipe[0] = read end, pipe[1] = write end
-    int to_engine[2];   // parent writes → engine reads
-    int from_engine[2]; // engine writes → parent reads
+    delete process_;
+    process_ = new QProcess();
 
-    if (pipe(to_engine) != 0 || pipe(from_engine) != 0) return false;
+    QStringList qargs;
+    for (const auto& a : args)
+        qargs << QString::fromStdString(a);
 
-    pid_t child = fork();
-    if (child < 0) return false;
+    process_->setReadChannel(QProcess::StandardOutput);
+    process_->start(QString::fromStdString(path), qargs);
 
-    if (child == 0) {
-        // ---------- child ----------
-        dup2(to_engine[0],   STDIN_FILENO);
-        dup2(from_engine[1], STDOUT_FILENO);
-        // Close all pipe ends in child
-        close(to_engine[0]);  close(to_engine[1]);
-        close(from_engine[0]); close(from_engine[1]);
-
-        // Build argv
-        std::vector<const char*> argv;
-        argv.push_back(path.c_str());
-        for (const auto& a : args) argv.push_back(a.c_str());
-        argv.push_back(nullptr);
-
-        execvp(path.c_str(), const_cast<char* const*>(argv.data()));
-        _exit(1); // exec failed
+    if (!process_->waitForStarted(5000)) {
+        delete process_;
+        process_ = nullptr;
+        return false;
     }
-
-    // ---------- parent ----------
-    close(to_engine[0]);
-    close(from_engine[1]);
-
-    stdin_fd_  = to_engine[1];
-    stdout_fd_ = from_engine[0];
-    pid_       = child;
-    running_   = true;
-
-    // Start background reader thread
-    reader_thread_ = std::thread(&UCIEngine::reader_loop, this);
     return true;
 }
 
 void UCIEngine::quit() {
-    if (!is_running()) return;
+    if (!process_) return;
 
     send("quit");
-    running_ = false;
 
-    // Give the engine up to 2 s to exit cleanly
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    int status = 0;
-    while (std::chrono::steady_clock::now() < deadline) {
-        pid_t r = waitpid(pid_, &status, WNOHANG);
-        if (r != 0) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    // Force kill if still alive
-    if (waitpid(pid_, &status, WNOHANG) == 0) {
-        kill(pid_, SIGKILL);
-        waitpid(pid_, &status, 0);
-    }
+    if (!process_->waitForFinished(2000))
+        process_->kill();
 
-    if (stdin_fd_  != -1) { close(stdin_fd_);  stdin_fd_  = -1; }
-    if (stdout_fd_ != -1) { close(stdout_fd_); stdout_fd_ = -1; }
-    pid_ = -1;
-
-    lines_cv_.notify_all();
-    if (reader_thread_.joinable()) reader_thread_.join();
+    process_->waitForFinished(1000);
+    delete process_;
+    process_ = nullptr;
 }
 
 bool UCIEngine::is_running() const {
-    return running_.load();
-}
-
-// ---------------------------------------------------------------------------
-// Background reader thread
-// ---------------------------------------------------------------------------
-void UCIEngine::reader_loop() {
-    char buf[4096];
-    std::string partial;
-
-    while (running_) {
-        ssize_t n = read(stdout_fd_, buf, sizeof(buf) - 1);
-        if (n <= 0) break; // EOF or error → engine exited
-
-        buf[n] = '\0';
-        partial += buf;
-
-        // Split on newlines and enqueue complete lines
-        size_t pos;
-        while ((pos = partial.find('\n')) != std::string::npos) {
-            std::string line = partial.substr(0, pos);
-            // Strip CR
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            partial.erase(0, pos + 1);
-
-            {
-                std::lock_guard<std::mutex> lk(lines_mutex_);
-                lines_.push_back(std::move(line));
-            }
-            lines_cv_.notify_one();
-        }
-    }
-    running_ = false;
-    lines_cv_.notify_all();
+    return process_ && process_->state() != QProcess::NotRunning;
 }
 
 // ---------------------------------------------------------------------------
 // Raw I/O
 // ---------------------------------------------------------------------------
 void UCIEngine::send(const std::string& cmd) {
-    if (stdin_fd_ == -1) return;
+    if (!process_) return;
     std::string msg = cmd + '\n';
-    const char* ptr = msg.c_str();
-    size_t left = msg.size();
-    while (left > 0) {
-        ssize_t n = write(stdin_fd_, ptr, left);
-        if (n <= 0) break;
-        ptr  += n;
-        left -= static_cast<size_t>(n);
-    }
+    process_->write(msg.c_str(), static_cast<qint64>(msg.size()));
 }
 
 std::string UCIEngine::read_line(int timeout_ms) {
-    std::unique_lock<std::mutex> lk(lines_mutex_);
-    auto has_data = [this] { return !lines_.empty() || !running_; };
+    if (!process_) return {};
 
-    if (timeout_ms < 0) {
-        lines_cv_.wait(lk, has_data);
-    } else {
-        if (!lines_cv_.wait_for(lk,
-                                std::chrono::milliseconds(timeout_ms),
-                                has_data))
-            return {}; // timeout
+    // Wait until a full line is available.
+    // waitForReadyRead may return with partial data, so loop until canReadLine.
+    QElapsedTimer timer;
+    timer.start();
+
+    while (!process_->canReadLine()) {
+        int remaining = (timeout_ms < 0)
+            ? -1
+            : static_cast<int>(timeout_ms - timer.elapsed());
+        if (remaining == 0) return {};
+        if (!process_->waitForReadyRead(remaining))
+            return {}; // timeout or error
     }
-    if (lines_.empty()) return {};
-    std::string line = lines_.front();
-    lines_.pop_front();
-    return line;
+
+    return process_->readLine().trimmed().toStdString();
 }
 
 // ---------------------------------------------------------------------------
@@ -217,17 +137,15 @@ std::string UCIEngine::read_line(int timeout_ms) {
 bool UCIEngine::init(int timeout_ms) {
     send("uci");
 
-    auto deadline = std::chrono::steady_clock::now() +
-                    std::chrono::milliseconds(timeout_ms);
+    QElapsedTimer timer;
+    timer.start();
 
-    while (std::chrono::steady_clock::now() < deadline) {
-        int remaining = static_cast<int>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - std::chrono::steady_clock::now()).count());
+    while (timer.elapsed() < timeout_ms) {
+        int remaining = static_cast<int>(timeout_ms - timer.elapsed());
         std::string line = read_line(remaining);
         if (line.empty()) {
-            if (!running_) break;  // engine exited
-            continue;              // skip blank lines
+            if (!is_running()) break;  // engine exited
+            continue;                  // skip blank lines
         }
 
         if (line.rfind("id name ", 0) == 0)
@@ -243,22 +161,22 @@ bool UCIEngine::init(int timeout_ms) {
 }
 
 bool UCIEngine::wait_ready(int timeout_ms) {
+    qDebug() << "[UCIEngine] >> isready";
     send("isready");
 
-    auto deadline = std::chrono::steady_clock::now() +
-                    std::chrono::milliseconds(timeout_ms);
+    QElapsedTimer timer;
+    timer.start();
 
-    while (std::chrono::steady_clock::now() < deadline) {
-        int remaining = static_cast<int>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - std::chrono::steady_clock::now()).count());
+    while (timer.elapsed() < timeout_ms) {
+        int remaining = static_cast<int>(timeout_ms - timer.elapsed());
         std::string line = read_line(remaining);
         if (line.empty()) {
-            if (!running_) break;
+            if (!is_running()) break;
             continue;
         }
-        if (line == "readyok") return true;
+        if (line == "readyok") { qDebug() << "[UCIEngine] << readyok"; return true; }
     }
+    qDebug() << "[UCIEngine] wait_ready TIMED OUT";
     return false;
 }
 
@@ -267,7 +185,9 @@ void UCIEngine::new_game() {
 }
 
 void UCIEngine::set_option(const std::string& name, const std::string& value) {
-    send("setoption name " + name + " value " + value);
+    std::string cmd = "setoption name " + name + " value " + value;
+    qDebug() << "[UCIEngine] >>" << QString::fromStdString(cmd);
+    send(cmd);
 }
 
 // ---------------------------------------------------------------------------
@@ -322,13 +242,11 @@ void UCIEngine::stop() {
 UCISearchResult UCIEngine::wait_for_bestmove(int timeout_ms) {
     UCISearchResult result;
 
-    auto deadline = std::chrono::steady_clock::now() +
-                    std::chrono::milliseconds(timeout_ms);
+    QElapsedTimer timer;
+    timer.start();
 
-    while (std::chrono::steady_clock::now() < deadline) {
-        int remaining = static_cast<int>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - std::chrono::steady_clock::now()).count());
+    while (timer.elapsed() < timeout_ms) {
+        int remaining = static_cast<int>(timeout_ms - timer.elapsed());
         std::string line = read_line(remaining);
         if (line.empty()) break;
 
@@ -355,10 +273,28 @@ UCISearchResult UCIEngine::think(const Game& game, const UCIGoOptions& opts) {
     for (const Move& m : game.get_move_history())
         moves.push_back(move_to_uci(m));
 
-    set_position_startpos(moves);
+    if (game.start_fen().empty())
+        set_position_startpos(moves);
+    else
+        set_position_fen(game.start_fen(), moves);
     go(opts);
 
-    int timeout = (opts.movetime > 0) ? opts.movetime * 3 : 30000;
+    // Calculate a generous timeout so wait_for_bestmove never fires before
+    // Stockfish finishes thinking:
+    //   - movetime: give 3x the requested time as safety margin
+    //   - wtime/btime: Stockfish will use at most ~85% of the remaining time
+    //     on one move, so remaining_time + a fixed 10 s buffer is enough
+    //   - fallback: 30 s
+    int timeout;
+    if (opts.movetime > 0)
+        timeout = opts.movetime * 3;
+    else if (opts.wtime > 0 || opts.btime > 0)
+        // Stockfish uses at most ~85% of remaining time on one move; add 10 s
+        // buffer but cap at 2 minutes so a crashed engine doesn't stall the UI.
+        timeout = std::min(std::max(opts.wtime, opts.btime) + 10000, 120000);
+    else
+        timeout = 30000;
+
     return wait_for_bestmove(timeout);
 }
 

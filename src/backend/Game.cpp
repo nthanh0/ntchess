@@ -7,6 +7,18 @@ Game::Game() {
     position_history.push_back(make_position());
 }
 
+bool Game::set_start_fen(const std::string& fen) {
+    bool blackToMove = board.setup_fen(fen);
+    turn   = blackToMove ? BLACK : WHITE;
+    status = ONGOING;
+    start_fen_ = fen;
+    move_history.clear();
+    move_history_san.clear();
+    position_history.clear();
+    position_history.push_back(make_position());
+    return blackToMove;
+}
+
 Position Game::make_position() const {
     Position key;
     for (int sq = 0; sq < 64; ++sq)
@@ -82,6 +94,39 @@ void Game::check_game_status() {
         }
     }
 
+    // Insufficient material
+    {
+        // Collect all pieces (excluding kings)
+        int wBishops = 0, bBishops = 0, wKnights = 0, bKnights = 0, other = 0;
+        int wBishopColor = -1, bBishopColor = -1; // square color of the bishop
+        for (int sq = 0; sq < 64; ++sq) {
+            Piece p = board.get_piece(sq);
+            switch (p) {
+            case W_BISHOP: ++wBishops; wBishopColor = (sq / 8 + sq % 8) % 2; break;
+            case B_BISHOP: ++bBishops; bBishopColor = (sq / 8 + sq % 8) % 2; break;
+            case W_KNIGHT: ++wKnights; break;
+            case B_KNIGHT: ++bKnights; break;
+            case W_KING: case B_KING: case NO_PIECE: break;
+            default: ++other; break; // queen, rook, pawn
+            }
+        }
+        bool insufficient = false;
+        if (other == 0) {
+            int wMinor = wBishops + wKnights;
+            int bMinor = bBishops + bKnights;
+            // KvK, KBvK, KNvK, KvKB, KvKN
+            if (wMinor == 0 && bMinor <= 1) insufficient = true;
+            else if (bMinor == 0 && wMinor <= 1) insufficient = true;
+            // KBvKB same square color
+            else if (wBishops == 1 && bBishops == 1 && wKnights == 0 && bKnights == 0
+                     && wBishopColor == bBishopColor) insufficient = true;
+        }
+        if (insufficient) {
+            status = DRAW_BY_INSUFFICIENT_MATERIAL;
+            return;
+        }
+    }
+
     std::vector<Move> legal_moves = generate_legal_moves(board, turn);
     if (is_in_check(board, turn)) {
         if (legal_moves.empty()) {
@@ -132,6 +177,17 @@ long long Game::stop_clock() {
 }
 
 bool Game::clock_running() const { return clock_running_; }
+
+bool Game::flag_if_timed_out() {
+    if (status != ONGOING || !clocks_set_ || !clock_running_)
+        return false;
+    if (remaining_ms(clock_owner_) <= 0) {
+        status = TIMEOUT;
+        clock_running_ = false;
+        return true;
+    }
+    return false;
+}
 
 long long Game::remaining_ms(Color color) const {
     if (!clocks_set_) return LLONG_MAX;

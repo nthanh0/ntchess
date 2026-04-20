@@ -1,6 +1,7 @@
 #ifndef BOARD_H
 #define BOARD_H
 
+#include <string>
 #include <vector>
 #include "types.h"
 
@@ -11,6 +12,7 @@ class Board {
     public:
         Board();
         void setup_pieces();
+        bool setup_fen(const std::string& fen); // returns true if black to move
         Piece get_piece(int file, int rank) const;
         Piece get_piece(int square) const;
         void set_piece(int file, int rank, Piece piece);

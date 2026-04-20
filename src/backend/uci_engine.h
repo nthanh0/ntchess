@@ -1,15 +1,12 @@
 #pragma once
 
 #include "Game.h"
-#include "types.h"
 
-#include <atomic>
-#include <condition_variable>
-#include <deque>
-#include <mutex>
 #include <string>
-#include <thread>
 #include <vector>
+
+#include <QObject>
+#include <QProcess>
 
 // ---------------------------------------------------------------------------
 // Data types shared with UCIEngine users
@@ -160,21 +157,12 @@ public:
     std::string read_line(int timeout_ms = -1);
 
 private:
-    pid_t pid_       = -1;
-    int   stdin_fd_  = -1;
-    int   stdout_fd_ = -1;
-
-    std::thread             reader_thread_;
-    std::mutex              lines_mutex_;
-    std::condition_variable lines_cv_;
-    std::deque<std::string> lines_;
-    std::atomic<bool>       running_{false};
+    QProcess* process_ = nullptr;
 
     std::string                  engine_name_;
     std::string                  engine_author_;
     std::vector<UCIEngineOption> options_;
 
-    void reader_loop();
     void parse_option_line(const std::string& line);
     UCISearchResult parse_info_line(const std::string& line,
                                     const UCISearchResult& prev) const;
