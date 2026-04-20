@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
+import QtCore
 
 Window {
     id: mainWindow
@@ -22,18 +23,35 @@ Window {
     }
 
     // panel is wider now to hold history, clocks, controls
-    readonly property int boardPx: squareSize * 8
-    readonly property int panelW:  Math.max(260, Math.round(squareSize * 4.5))
-    readonly property int sp:      Math.round(squareSize * 0.18)  // small spacing unit
+    readonly property int boardPx:   squareSize * 8
+    readonly property int panelW:    Math.max(260, Math.round(squareSize * 4.5))
+    readonly property int sp:        Math.round(squareSize * 0.18)  // small spacing unit
+    readonly property int evalBarW:  Math.round(squareSize * 0.25) // eval bar (analysis only)
 
-    width:  boardPx + panelW
-    height: boardPx
-    minimumWidth:  width;  maximumWidth:  width
-    minimumHeight: height; maximumHeight: height
+    // analysis screen is slightly wider (eval bar added between board and panel)
+    readonly property int targetWidth:  appScreen === "analysis" ? boardPx + evalBarW + panelW : boardPx + panelW
+    readonly property int targetHeight: boardPx
+    width:  targetWidth
+    height: targetHeight
+    // Drive min/max via change handlers to avoid the bind-ordering deadlock
+    // (minimumWidth > maximumWidth momentarily) when switching screens.
+    onTargetWidthChanged: { minimumWidth = targetWidth; maximumWidth = targetWidth }
+    onTargetHeightChanged: { minimumHeight = targetHeight; maximumHeight = targetHeight }
+    Component.onCompleted: {
+        minimumWidth  = targetWidth;  maximumWidth  = targetWidth
+        minimumHeight = targetHeight; maximumHeight = targetHeight
+    }
 
-    // current theme state
-    property string activeBoardTheme: "brown"
-    property string activePieceTheme: "cburnett"
+    // ── Persistent settings (Qt-managed ini file) ─────────────────────────
+    Settings {
+        id: appSettings
+        property string boardTheme: "brown"
+        property string pieceTheme: "cburnett"
+    }
+
+    // current theme state – driven by appSettings (survives restarts automatically)
+    property string activeBoardTheme: appSettings.boardTheme
+    property string activePieceTheme: appSettings.pieceTheme
 
     // engine display name (updated once engine initialises)
     property string computerName: chessboard.engineName !== "" ? chessboard.engineName : "Computer"
@@ -46,7 +64,9 @@ Window {
     property string blackPlayerName: "Black"
     property int    whitePlayerElo:  0
     property int    blackPlayerElo:  0
-    property int    resignedSide:    -1  // -1=none, 0=white resigned, 1=black resigned
+    property int    resignedSide:     -1  // -1=none, 0=white resigned, 1=black resigned
+    // -1=HvH, 0=engine white, 1=engine black, 2=CvC
+    property int    gameComputerSide: -1
 
     // ── helpers ─────────────────────────────────────────────────────────────
     // piece enum (1-12) → small image url using 32x32 folder
@@ -60,9 +80,11 @@ Window {
         if (ms < 0) return "--:--"
         const clamped = Math.max(0, ms)
         const totalSec = Math.floor(clamped / 1000)
-        const m = Math.floor(totalSec / 60)
+        const h = Math.floor(totalSec / 3600)
+        const m = Math.floor((totalSec % 3600) / 60)
         const s = totalSec % 60
-        const base = (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s
+        const mmss = (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s
+        const base = h > 0 ? (h < 10 ? "0" : "") + h + ":" + mmss : mmss
         if (clamped < 10000) {
             const t = Math.floor((clamped % 1000) / 100)
             return base + "." + t
@@ -80,8 +102,9 @@ Window {
         pieceSizeFolder: mainWindow.pieceSizeFolder
         interactive:     appScreen === "playing" && chessboard.atLatestMove
 
-        onResigned: function(loserColor) {
+        onPlayerResigned: function(loserColor) {
             mainWindow.resignedSide = loserColor
+            chessboard.clearSavedGame()
         }
     }
 
@@ -109,23 +132,25 @@ Window {
 
                 Repeater {
                     model: [
-                        { label: "New Game",         action: "newgame"  },
-                        { label: "Analysis",         action: "analysis" },
-                        { label: "Settings",         action: "settings" }
+                        { label: "New Game",  action: "newgame"                    },
+                        { label: "Continue",  action: "continue", conditional: true },
+                        { label: "Analysis",  action: "analysis"                   },
+                        { label: "Settings",  action: "settings"                   }
                     ]
                     delegate: Rectangle {
                         required property var modelData
+                        visible: !modelData.conditional || chessboard.hasSavedGame
                         width:  parent.width
-                        height: Math.round(squareSize * 0.78)
+                        height: visible ? Math.round(squareSize * 0.78) : 0
                         radius: 6
-                        color:  mBtnMa.containsMouse ? "#3d3d3d" : "#303030"
-                        border.color: mBtnMa.containsMouse ? "#555" : "transparent"
+                        color:  mBtnMa.containsMouse ? "#3d3d3d" : (modelData.action === "continue" ? "#2a3d2a" : "#303030")
+                        border.color: mBtnMa.containsMouse ? "#555" : (modelData.action === "continue" ? "#4a7a4a" : "transparent")
 
                         Text {
                             anchors.centerIn: parent
                             text: parent.modelData.label
                             font.pixelSize: Math.round(squareSize * 0.28)
-                            color: "#ddd"
+                            color: parent.modelData.action === "continue" ? "#8fca8f" : "#ddd"
                         }
 
                         MouseArea {
@@ -137,13 +162,35 @@ Window {
                                 const a = parent.modelData.action
                                 if (a === "newgame") {
                                     newGameDialog.open()
-                                } else if (a === "vspc") {
-                                    // shortcut: open new game dialog pre-set to vs computer
-                                    newGameDialog.open()
+                                } else if (a === "continue") {
+                                    const meta = chessboard.loadSavedGame()
+                                    if (Object.keys(meta).length === 0) return
+                                    mainWindow.resignedSide = -1
+                                    const cs = meta.computerSide
+                                    const we = meta.whiteElo
+                                    const be = meta.blackElo
+                                    mainWindow.gameComputerSide = cs
+                                    chessboard.setEngineElos(we, be)
+                                    if (cs === 0) {
+                                        mainWindow.whitePlayerName = mainWindow.computerName
+                                        mainWindow.blackPlayerName = "Player"
+                                    } else if (cs === 1) {
+                                        mainWindow.whitePlayerName = "Player"
+                                        mainWindow.blackPlayerName = mainWindow.computerName
+                                    } else {
+                                        mainWindow.whitePlayerName = meta.whiteName
+                                        mainWindow.blackPlayerName = meta.blackName
+                                    }
+                                    mainWindow.whitePlayerElo = we
+                                    mainWindow.blackPlayerElo = be
+                                    if (cs >= 0)
+                                        chessboard.setComputerSide(cs)
+                                    appScreen = "playing"
                                 } else if (a === "settings") {
                                     settingsDialog.open()
+                                } else if (a === "analysis") {
+                                    appScreen = "analysis"
                                 }
-                                // analysis: future
                             }
                         }
                     }
@@ -158,6 +205,12 @@ Window {
             id: gamePanel
             anchors.fill: parent
             visible: appScreen === "playing"
+            focus: visible
+
+            onVisibleChanged: if (visible) forceActiveFocus()
+
+            Keys.onLeftPressed:  if (chessboard.viewMoveIndex > 0) chessboard.stepBack()
+            Keys.onRightPressed: if (!chessboard.atLatestMove)     chessboard.stepForward()
 
         // ── Top bar (floating overlay – does not consume layout space) ───
         Item {
@@ -208,15 +261,29 @@ Window {
 
                     MenuItem {
                         text: "Settings"
-                        contentItem: Text { text: parent.text; color: "#ddd"; font.pixelSize: Math.round(squareSize * 0.2); leftPadding: 8 }
+                        contentItem: Text { text: parent.text; color: "#ddd"; font.pixelSize: Math.round(squareSize * 0.175); leftPadding: 8 }
                         background: Rectangle { color: parent.highlighted ? "#3a3a3a" : "transparent" }
                         onTriggered: settingsDialog.open()
                     }
                     MenuItem {
                         text: "Back to Menu"
-                        contentItem: Text { text: parent.text; color: "#ddd"; font.pixelSize: Math.round(squareSize * 0.2); leftPadding: 8 }
+                        contentItem: Text { text: parent.text; color: "#ddd"; font.pixelSize: Math.round(squareSize * 0.175); leftPadding: 8 }
                         background: Rectangle { color: parent.highlighted ? "#3a3a3a" : "transparent" }
-                        onTriggered: appScreen = "menu"
+                        onTriggered: {
+                            // Save current game state so Continue works
+                            if (chessboard.gameStatus === "ongoing" && mainWindow.resignedSide < 0)
+                                chessboard.saveGame(
+                                    mainWindow.whitePlayerName,
+                                    mainWindow.blackPlayerName,
+                                    mainWindow.gameComputerSide,
+                                    mainWindow.whitePlayerElo,
+                                    mainWindow.blackPlayerElo
+                                )
+                            // Pause (stop clock/engine) but keep board position
+                            // visible in the menu background.
+                            chessboard.pauseForMenu()
+                            appScreen = "menu"
+                        }
                     }
                 }
             }
@@ -242,6 +309,8 @@ Window {
                     id: blackBar
                     width: parent.width
                     height: Math.round(squareSize * 1.1)
+                    squareSize: mainWindow.squareSize
+                    sp:         mainWindow.sp
                     capturesOnTop: true
                     isActive:    chessboard.currentTurn === 1 && chessboard.gameStatus === "ongoing"
                     hasClock:    chessboard.hasClock
@@ -345,6 +414,8 @@ Window {
                     id: whiteBar
                     width: parent.width
                     height: Math.round(squareSize * 1.1)
+                    squareSize: mainWindow.squareSize
+                    sp:         mainWindow.sp
                     isActive:    chessboard.currentTurn === 0 && chessboard.gameStatus === "ongoing"
                     hasClock:    chessboard.hasClock
                     remainingMs: chessboard.whiteRemainingMs
@@ -454,6 +525,7 @@ Window {
                 IconBtn {
                     text: "⊕"
                     tooltip: "New Game"
+                    squareSize: mainWindow.squareSize
                     onBtnClicked: newGameDialog.open()
                     Layout.fillWidth: true
                 }
@@ -462,7 +534,9 @@ Window {
                 IconBtn {
                     text: "←"
                     tooltip: "Previous move"
+                    squareSize: mainWindow.squareSize
                     enabled: chessboard.viewMoveIndex > 0
+                    holdRepeat: true
                     onBtnClicked: chessboard.stepBack()
                     Layout.fillWidth: true
                 }
@@ -471,7 +545,9 @@ Window {
                 IconBtn {
                     text: "→"
                     tooltip: "Next move"
+                    squareSize: mainWindow.squareSize
                     enabled: !chessboard.atLatestMove
+                    holdRepeat: true
                     onBtnClicked: chessboard.stepForward()
                     Layout.fillWidth: true
                 }
@@ -480,6 +556,7 @@ Window {
                 IconBtn {
                     text: "↩"
                     tooltip: "Take back"
+                    squareSize: mainWindow.squareSize
                     enabled: chessboard.undoAllowed
                              && chessboard.atLatestMove
                              && chessboard.viewMoveIndex > 0
@@ -488,11 +565,15 @@ Window {
                     Layout.fillWidth: true
                 }
 
-                // Resign
+                // Resign – hidden in CvC; disabled in HvC when it's the computer's turn
                 IconBtn {
                     text: "🏳"
                     tooltip: "Resign"
+                    squareSize: mainWindow.squareSize
+                    visible: mainWindow.gameComputerSide !== 2
                     enabled: chessboard.gameStatus === "ongoing"
+                        && (mainWindow.gameComputerSide < 0
+                            || chessboard.currentTurn !== mainWindow.gameComputerSide)
                     onBtnClicked: resignConfirmPopup.open()
                     Layout.fillWidth: true
                 }
@@ -500,6 +581,20 @@ Window {
         }
         } // end gamePanel
     } // end panel
+
+    // ── Analysis view ───────────────────────────────────────────────────────
+    AnalysisView {
+        id: analysisViewInst
+        visible:         appScreen === "analysis"
+        x: 0; y: 0
+        squareSize:      mainWindow.squareSize
+        pieceSizeFolder: mainWindow.pieceSizeFolder
+        boardTheme:      mainWindow.activeBoardTheme
+        pieceTheme:      mainWindow.activePieceTheme
+        sp:              mainWindow.sp
+        onBackToMenu:        appScreen = "menu"
+        onSettingsRequested: settingsDialog.open()
+    }
 
     // ── Resign confirmation ─────────────────────────────────────────────────
     Popup {
@@ -518,7 +613,12 @@ Window {
                 anchors.horizontalCenter: parent.horizontalCenter
             }
             Text {
-                text: (chessboard.currentTurn === 0 ? "White" : "Black") + " will forfeit the game."
+                text: {
+                    // In HvC always name the human side
+                    const cs = mainWindow.gameComputerSide
+                    const side = (cs === 0) ? 1 : (cs === 1) ? 0 : chessboard.currentTurn
+                    return (side === 0 ? "White" : "Black") + " will forfeit the game."
+                }
                 color: "#aaa"; font.pixelSize: 12; wrapMode: Text.WordWrap; width: parent.width
                 horizontalAlignment: Text.AlignHCenter
             }
@@ -554,6 +654,8 @@ Window {
             engineThreads   = chessboard.engineThreads
         }
         onApplied: {
+            appSettings.boardTheme     = settingsDialog.boardTheme
+            appSettings.pieceTheme     = settingsDialog.pieceTheme
             mainWindow.activeBoardTheme = settingsDialog.boardTheme
             mainWindow.activePieceTheme = settingsDialog.pieceTheme
             chessboard.setEnginePath(settingsDialog.enginePath)
@@ -580,6 +682,19 @@ Window {
             if (chessboard.engineNameBlack !== "")
                 mainWindow.blackPlayerName = chessboard.engineNameBlack
         }
+        function onMovePlayed(wasCapture, isGameOver) {
+            if (isGameOver) {
+                chessboard.clearSavedGame()
+            } else {
+                chessboard.saveGame(
+                    mainWindow.whitePlayerName,
+                    mainWindow.blackPlayerName,
+                    mainWindow.gameComputerSide,
+                    mainWindow.whitePlayerElo,
+                    mainWindow.blackPlayerElo
+                )
+            }
+        }
     }
 
     // ── New game dialog ─────────────────────────────────────────────────────
@@ -587,13 +702,17 @@ Window {
         id: newGameDialog
         parent: Overlay.overlay
         anchors.centerIn: parent
+        squareSize:   mainWindow.squareSize
+        windowHeight: mainWindow.height
         onStartGame: function(mode, playerColor, timeMsW, incMsW, timeMsB, incMsB, fen, allowUndo, eloWhite, eloBlack) {
+            chessboard.clearSavedGame()
             chessboard.newGame(fen)
             chessboard.undoAllowed = allowUndo
             mainWindow.resignedSide = -1
             if (timeMsW > 0 || timeMsB > 0)
                 chessboard.configureClock(timeMsW, timeMsB, incMsW, incMsB)
             if (mode === 0) {         // Human vs Human
+                mainWindow.gameComputerSide = -1
                 chessboard.setComputerSide(-1)
                 chessboard.setEngineElos(0, 0)
                 mainWindow.whitePlayerName = "White"
@@ -609,6 +728,7 @@ Window {
                 let wElo = (engineColor === 0) ? engineElo : 0
                 let bElo = (engineColor === 1) ? engineElo : 0
                 chessboard.setEngineElos(wElo, bElo)
+                mainWindow.gameComputerSide = engineColor
                 chessboard.setComputerSide(engineColor)
                 if (humanColor === 0) {
                     mainWindow.whitePlayerName = "Player"
@@ -627,256 +747,13 @@ Window {
                 mainWindow.blackPlayerName = mainWindow.computerName
                 mainWindow.whitePlayerElo  = eloWhite
                 mainWindow.blackPlayerElo  = eloBlack
+                mainWindow.gameComputerSide = 2
                 chessboard.setComputerSide(2)  // starts engines; onEngineNameBlackChanged will update blackPlayerName
             }
             appScreen = "playing"
         }
     }
 
-    // ── Inline component: player bar ────────────────────────────────────────
-    component PlayerBar: Item {
-        id: pb
-
-        property bool   isActive:      false
-        property bool   hasClock:      false
-        property int    remainingMs:   -1
-        property var    capturedPieces: []
-        property var    opponentCapturedPieces: []
-        property var    pieceSizeUrl   // function(pid) -> url
-
-        // material value of a piece id (Q=9 R=5 B=3 N=3 P=1)
-        function pieceValue(pid) {
-            var v = [0,0,9,5,3,3,1,0,9,5,3,3,1]
-            return (pid >= 0 && pid <= 12) ? v[pid] : 0
-        }
-
-        // net material advantage: my captures minus opponent captures
-        property int materialDiff: {
-            var s = 0
-            for (var i = 0; i < capturedPieces.length; i++)         s += pieceValue(capturedPieces[i])
-            for (var j = 0; j < opponentCapturedPieces.length; j++)  s -= pieceValue(opponentCapturedPieces[j])
-            return s
-        }
-        property string clockText:     ""
-        property string playerName:    ""
-        property int    playerElo:     0
-        property bool   capturesOnTop: false
-
-        // Main layout column, vertically centred in the bar
-        Column {
-            anchors {
-                left:           parent.left
-                leftMargin:     10
-                right:          parent.right
-                rightMargin:    6
-                verticalCenter: parent.verticalCenter
-            }
-            spacing: 3
-
-            // Captured pieces ABOVE clock (used when capturesOnTop = true)
-            Item {
-                id: captureRowTop
-                visible: pb.capturesOnTop
-                width:  visible ? Math.round(squareSize * 1.7) : 0
-                height: visible ? captureIconSzTop : 0
-
-                readonly property int captureIconSzTop: Math.round(squareSize * 0.26)
-                readonly property int captureStepTop:   Math.round(squareSize * 0.08)
-
-                property var captureGroupsTop: {
-                    var order = [2,3,4,5,6,8,9,10,11,12]
-                    var counts = {}
-                    for (var i = 0; i < pb.capturedPieces.length; i++) {
-                        var p = pb.capturedPieces[i]; counts[p] = (counts[p] || 0) + 1
-                    }
-                    var result = []
-                    for (var j = 0; j < order.length; j++) { var pid = order[j]; if (counts[pid]) result.push({pid: pid, count: counts[pid]}) }
-                    return result
-                }
-
-                Row {
-                    spacing: Math.round(squareSize * 0.01)
-                    anchors.verticalCenter: parent.verticalCenter
-                    Repeater {
-                        model: captureRowTop.captureGroupsTop
-                        delegate: Item {
-                            id: groupItemT
-                            required property var modelData
-                            width:  captureRowTop.captureIconSzTop + Math.max(0, modelData.count - 1) * captureRowTop.captureStepTop
-                            height: captureRowTop.captureIconSzTop
-                            Repeater {
-                                model: groupItemT.modelData.count
-                                delegate: Image {
-                                    required property int index
-                                    x: index * captureRowTop.captureStepTop
-                                    width: captureRowTop.captureIconSzTop; height: captureRowTop.captureIconSzTop
-                                    source: pb.pieceSizeUrl(groupItemT.modelData.pid)
-                                    fillMode: Image.PreserveAspectFit; smooth: true
-                                }
-                            }
-                        }
-                    }
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: pb.materialDiff > 0
-                        text: "+" + pb.materialDiff
-                        color: "#aaa"; font.pixelSize: Math.round(squareSize * 0.19)
-                        leftPadding: Math.round(squareSize * 0.03)
-                    }
-                }
-            }
-
-            // Top row: clock box + name/elo side by side
-            Row {
-                spacing: 8
-                // Clock box
-                Rectangle {
-                    id: clockBox
-                    visible: pb.hasClock
-                    width:   Math.round(squareSize * 1.75)
-                    height:  Math.round(squareSize * 0.6)
-                    radius:  4
-                    readonly property bool lowTime: pb.isActive && pb.remainingMs >= 0 && pb.remainingMs < 10000
-                    color:        lowTime ? "#3a0a0a" : (pb.isActive ? "#1a3a1a" : "#1e1e1e")
-                    border.color: lowTime ? "#cc3333"  : (pb.isActive ? "#6ab46a" : "#444")
-                    border.width: pb.isActive ? 2 : 1
-
-                    Text {
-                        anchors.centerIn: parent
-                        text:             pb.clockText
-                        font.pixelSize:   Math.round(squareSize * 0.36)
-                        font.family:      "Monospace"
-                        font.bold:        pb.isActive
-                        color:            clockBox.lowTime ? "#ff6666" : (pb.isActive ? "#c8f0c8" : "#888")
-                    }
-                }
-
-                // Name + elo, vertically centred next to clock
-                Row {
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 6
-                    Text {
-                        text: pb.playerName
-                        color: pb.isActive ? "#e8e8e8" : "#aaa"
-                        font.pixelSize: Math.round(squareSize * 0.22)
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-                    Text {
-                        visible: pb.playerElo > 0
-                        text: "(" + pb.playerElo + ")"
-                        color: "#777"
-                        font.pixelSize: Math.round(squareSize * 0.18)
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-                }
-            }
-
-            // Captured pieces BELOW clock (used when capturesOnTop = false)
-            Item {
-                id: captureRow
-                visible: !pb.capturesOnTop
-                width:  visible ? Math.round(squareSize * 1.7) : 0
-                height: visible ? captureIconSz : 0
-
-                readonly property int captureIconSz: Math.round(squareSize * 0.26)
-                readonly property int captureStep:   Math.round(squareSize * 0.08)
-
-                property var captureGroups: {
-                    var order = [2,3,4,5,6,8,9,10,11,12]
-                    var counts = {}
-                    for (var i = 0; i < pb.capturedPieces.length; i++) {
-                        var p = pb.capturedPieces[i]
-                        counts[p] = (counts[p] || 0) + 1
-                    }
-                    var result = []
-                    for (var j = 0; j < order.length; j++) {
-                        var pid = order[j]
-                        if (counts[pid]) result.push({pid: pid, count: counts[pid]})
-                    }
-                    return result
-                }
-
-                Row {
-                    spacing: Math.round(squareSize * 0.01)
-                    anchors.verticalCenter: parent.verticalCenter
-
-                    Repeater {
-                        model: captureRow.captureGroups
-                        delegate: Item {
-                            id: groupItem
-                            required property var modelData
-                            width:  captureRow.captureIconSz + Math.max(0, modelData.count - 1) * captureRow.captureStep
-                            height: captureRow.captureIconSz
-
-                            Repeater {
-                                model: groupItem.modelData.count
-                                delegate: Image {
-                                    required property int index
-                                    x: index * captureRow.captureStep
-                                    width:  captureRow.captureIconSz
-                                    height: captureRow.captureIconSz
-                                    source: pb.pieceSizeUrl(groupItem.modelData.pid)
-                                    fillMode: Image.PreserveAspectFit
-                                    smooth: true
-                                }
-                            }
-                        }
-                    }
-
-                    // +N material advantage label
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: pb.materialDiff > 0
-                        text:    "+" + pb.materialDiff
-                        color:   "#aaa"
-                        font.pixelSize: Math.round(squareSize * 0.19)
-                        font.bold: false
-                        leftPadding: Math.round(squareSize * 0.03)
-                    }
-                }
-            }
-        }
-    }
-
-    // ── Inline component: icon button ───────────────────────────────────────
-    component IconBtn: Item {
-        id: ib
-        property string text:    ""
-        property string tooltip: ""
-        property bool   enabled: true
-        signal btnClicked()
-
-        height: Math.round(squareSize * 0.65)
-        Layout.fillWidth: true
-
-        Rectangle {
-            anchors.centerIn: parent
-            width:  Math.round(squareSize * 0.65)
-            height: Math.round(squareSize * 0.65)
-            radius: Math.round(squareSize * 0.1)
-            color:  ib.enabled && ibMa.containsMouse ? "#444" : "transparent"
-
-            Text {
-                anchors.centerIn: parent
-                text:             ib.text
-                font.pixelSize:   Math.round(squareSize * 0.32)
-                color:            ib.enabled ? (ibMa.containsMouse ? "white" : "#bbb") : "#555"
-            }
-        }
-
-        MouseArea {
-            id: ibMa
-            anchors.fill: parent
-            hoverEnabled: true
-            enabled:      ib.enabled
-            cursorShape:  ib.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-            onClicked:    ib.btnClicked()
-        }
-
-        // Simple tooltip
-        ToolTip.visible:  ib.tooltip !== "" && ibMa.containsMouse
-        ToolTip.text:     ib.tooltip
-        ToolTip.delay:    600
-    }
+// PlayerBar and IconBtn are now in PlayerBar.qml / IconBtn.qml
 }
 
