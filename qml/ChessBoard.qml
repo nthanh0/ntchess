@@ -47,9 +47,34 @@ Item {
     readonly property alias viewMoveIndex:    bridge.viewMoveIndex
     property alias undoAllowed:               bridge.undoAllowed
 
+    // Analysis / eval bar
+    readonly property alias analysisEvalCp:     bridge.analysisEvalCp
+    readonly property alias analysisEvalMate:   bridge.analysisEvalMate
+    readonly property alias analysisEvalMateIn: bridge.analysisEvalMateIn
+    readonly property alias analysisTopLines:   bridge.analysisTopLines
+    readonly property alias analysisDepth:      bridge.analysisDepth
+    readonly property alias analysisEngineName: bridge.analysisEngineName
+    function startAnalysis() { bridge.startAnalysis() }
+    function stopAnalysis()  { bridge.stopAnalysis()  }
+
     function stepBack()    { root.selectedSquare = -1; root.legalTargets = []; bridge.stepBack() }
     function stepForward() { root.selectedSquare = -1; root.legalTargets = []; bridge.stepForward() }
     function takeBack()    { root.selectedSquare = -1; root.legalTargets = []; bridge.takeBack() }
+    function initAsAnalysisBridge()  { bridge.initAsAnalysisBridge() }
+    function saveAnalysisPosition()  { bridge.saveAnalysisPosition() }
+
+    // ── Persistent game helpers ────────────────────────────────────────────
+    readonly property alias hasSavedGame: bridge.hasSavedGame
+    function saveGame(wn, bn, cs, we, be) { bridge.saveGame(wn, bn, cs, we, be) }
+    function loadSavedGame()              { return bridge.loadSavedGame() }
+    function clearSavedGame()             { bridge.clearSavedGame() }
+    function pauseForMenu()               { bridge.pauseForMenu() }
+    function savedBoardTheme()            { return bridge.savedBoardTheme() }
+    function savedPieceTheme()            { return bridge.savedPieceTheme() }
+
+    // ── Forwarded signals ─────────────────────────────────────────────────
+    signal movePlayed(bool wasCapture, bool isGameOver)
+    signal playerResigned(int loserColor)
 
     // ── backend ────────────────────────────────────────────────────────────
     GameBridge {
@@ -57,9 +82,13 @@ Item {
         boardTheme: root.boardTheme
         pieceTheme: root.pieceTheme
         onMovePlayed: function(wasCapture, isGameOver) {
+            root.movePlayed(wasCapture, isGameOver)
             if (isGameOver)        gameEndSound.play()
             else if (wasCapture)   captureSound.play()
             else                   moveSound.play()
+        }
+        onPlayerResigned: function(loserColor) {
+            root.playerResigned(loserColor)
         }
     }
 
@@ -86,6 +115,46 @@ Item {
     ]
 
     function squareIndex(col, row) { return (7 - row) * 8 + col }
+
+    // ── board coordinate colours ───────────────────────────────────────────
+    // Returns { onLight, onDark } text colours matching the current board theme.
+    // Text drawn on a light square uses onLight; text on a dark square uses onDark.
+    function coordColors() {
+        const map = {
+            "blue":          { onLight: "#6f8fa9", onDark: "#d0d9e8" },
+            "blue-marble":   { onLight: "#5b7fa0", onDark: "#ccd8e8" },
+            "blue2":         { onLight: "#5b7fa0", onDark: "#cee3f8" },
+            "blue3":         { onLight: "#4a6f90", onDark: "#bed5e8" },
+            "brown":         { onLight: "#b58863", onDark: "#f0d9b5" },
+            "canvas2":       { onLight: "#8a7560", onDark: "#dfd3c0" },
+            "green":         { onLight: "#769656", onDark: "#ffffdd" },
+            "green-plastic": { onLight: "#5a8060", onDark: "#ddf0dd" },
+            "grey":          { onLight: "#777777", onDark: "#dddddd" },
+            "horsey":        { onLight: "#7c6840", onDark: "#f0deb4" },
+            "ic":            { onLight: "#705c2e", onDark: "#fffacd" },
+            "leather":       { onLight: "#8a6040", onDark: "#e8c89a" },
+            "maple":         { onLight: "#9c6030", onDark: "#f8d8a8" },
+            "maple2":        { onLight: "#9c6030", onDark: "#f8d8a8" },
+            "marble":        { onLight: "#888888", onDark: "#eeeeee" },
+            "metal":         { onLight: "#606060", onDark: "#d0d0d0" },
+            "olive":         { onLight: "#7a8a50", onDark: "#e8e8c0" },
+            "pink-pyramid":  { onLight: "#b06080", onDark: "#f8d8e8" },
+            "purple":        { onLight: "#7050a0", onDark: "#e8d8f8" },
+            "purple-diag":   { onLight: "#7050a0", onDark: "#e8d8f8" },
+            "wood":          { onLight: "#8a6040", onDark: "#f0d8b0" },
+            "wood2":         { onLight: "#8a6040", onDark: "#f0d8b0" },
+            "wood3":         { onLight: "#8a6040", onDark: "#f0d8b0" },
+            "wood4":         { onLight: "#8a6040", onDark: "#f0d8b0" },
+        }
+        return map[root.boardTheme] ?? { onLight: "rgba(0,0,0,0.50)", onDark: "rgba(255,255,255,0.65)" }
+    }
+
+    // Returns the coordinate text colour for a square at display (col, row).
+    // Light square: (col+row)%2===0; dark square: (col+row)%2===1
+    function coordColor(col, row) {
+        const cc = coordColors()
+        return (col + row) % 2 === 0 ? cc.onLight : cc.onDark
+    }
 
     function pieceImageUrl(pieceId) {
         if (pieceId <= 0) return ""
@@ -115,7 +184,7 @@ Item {
     // ── interaction state ───────────────────────────────────────────────────
     property int  selectedSquare: -1
     property var  legalTargets:   []
-    property bool gameOver:       bridge.gameStatus !== "ongoing"
+    property bool gameOver:       bridge.gameStatus !== "ongoing" || bridge.resigned
 
     // last move highlight
     property int lastMoveFrom: -1
@@ -197,6 +266,47 @@ Item {
         }
     }
 
+    // ── board coordinates (rank numbers + file letters) ────────────────────
+    Grid {
+        anchors.fill: parent
+        rows: 8
+        columns: 8
+
+        Repeater {
+            model: 64
+            delegate: Item {
+                required property int index
+                width:  root.squareSize
+                height: root.squareSize
+
+                property int col: index % 8         // display column 0=a … 7=h
+                property int row: Math.floor(index / 8) // display row 0=top … 7=bottom
+                property int rank: 8 - row           // chess rank 1-8
+                property string file: "abcdefgh"[col]
+
+                // Rank number: top-left corner of the a-file squares (col==0)
+                Text {
+                    visible: col === 0
+                    text: parent.rank
+                    font.pixelSize: Math.max(9, root.squareSize * 0.19)
+                    font.bold: true
+                    color: coordColor(parent.col, parent.row)
+                    anchors { top: parent.top; left: parent.left; margins: root.squareSize * 0.05 }
+                }
+
+                // File letter: bottom-right corner of the rank-1 squares (row==7)
+                Text {
+                    visible: row === 7
+                    text: parent.file
+                    font.pixelSize: Math.max(9, root.squareSize * 0.19)
+                    font.bold: true
+                    color: coordColor(parent.col, parent.row)
+                    anchors { bottom: parent.bottom; right: parent.right; margins: root.squareSize * 0.05 }
+                }
+            }
+        }
+    }
+
     // ── pieces ─────────────────────────────────────────────────────────────
     Grid {
         id: pieceGrid
@@ -267,6 +377,86 @@ Item {
             slideAnimY.to   = sqPixelY(toSq)
             slideAnimX.start()
             slideAnimY.start()
+        }
+    }
+
+    // ── best-move arrow overlay ────────────────────────────────────────────
+    property bool showBestMoveArrow: true
+
+    // Best-move square indices fed from outside (AnalysisView)
+    property int  bestMoveFrom: -1
+    property int  bestMoveTo:   -1
+
+    // Max engine depth (0 = unlimited).  Setting this forwards to the bridge.
+    property int  maxEngineDepth: 0
+    onMaxEngineDepthChanged: bridge.setAnalysisMaxDepth(maxEngineDepth)
+
+    Canvas {
+        id: arrowCanvas
+        anchors.fill: parent
+        visible: root.showBestMoveArrow && root.bestMoveFrom >= 0 && root.bestMoveTo >= 0
+        z: 15  // above pieces, below dragged piece
+
+        // Redraw whenever the relevant inputs change
+        onVisibleChanged: requestPaint()
+        Connections {
+            target: root
+            function onBestMoveFromChanged() { arrowCanvas.requestPaint() }
+            function onBestMoveToChanged()   { arrowCanvas.requestPaint() }
+            function onShowBestMoveArrowChanged() { arrowCanvas.requestPaint() }
+        }
+
+        onPaint: {
+            const ctx = getContext("2d")
+            ctx.clearRect(0, 0, width, height)
+            if (!root.showBestMoveArrow || root.bestMoveFrom < 0 || root.bestMoveTo < 0) return
+
+            const ss   = root.squareSize
+            const half = ss / 2
+
+            // Centre of each square
+            const x1 = sqPixelX(root.bestMoveFrom) + half
+            const y1 = sqPixelY(root.bestMoveFrom) + half
+            const x2 = sqPixelX(root.bestMoveTo)   + half
+            const y2 = sqPixelY(root.bestMoveTo)    + half
+
+            const dx = x2 - x1
+            const dy = y2 - y1
+            const len = Math.sqrt(dx * dx + dy * dy)
+            if (len < 1) return
+
+            const ux = dx / len
+            const uy = dy / len
+
+            // Arrow geometry
+            const shaftW    = ss * 0.14
+            const headLen   = ss * 0.38
+            const headWidth = ss * 0.68
+            // Shorten shaft so it doesn't overdraw the arrowhead
+            const shaftEnd  = len - headLen
+
+            const px = -uy, py = ux  // perpendicular unit vector
+
+            ctx.globalAlpha = 0.42
+            ctx.fillStyle   = "#3a5a3a"
+            ctx.lineJoin    = "round"
+
+            ctx.beginPath()
+            // Shaft rectangle corners
+            ctx.moveTo(x1 + px * shaftW / 2,          y1 + py * shaftW / 2)
+            ctx.lineTo(x1 + ux * shaftEnd + px * shaftW / 2,
+                       y1 + uy * shaftEnd + py * shaftW / 2)
+            // Arrowhead
+            ctx.lineTo(x1 + ux * shaftEnd + px * headWidth / 2,
+                       y1 + uy * shaftEnd + py * headWidth / 2)
+            ctx.lineTo(x2, y2)
+            ctx.lineTo(x1 + ux * shaftEnd - px * headWidth / 2,
+                       y1 + uy * shaftEnd - py * headWidth / 2)
+            ctx.lineTo(x1 + ux * shaftEnd - px * shaftW / 2,
+                       y1 + uy * shaftEnd - py * shaftW / 2)
+            ctx.lineTo(x1 - px * shaftW / 2, y1 - py * shaftW / 2)
+            ctx.closePath()
+            ctx.fill()
         }
     }
 
@@ -539,6 +729,8 @@ Item {
     function configureClock(wMs, bMs, wIncMs, bIncMs) { bridge.configureClock(wMs, bMs, wIncMs, bIncMs) }
     function resign()            { bridge.resign() }
     function gamePgn(w, b)       { return bridge.gamePgn(w || "?", b || "?") }
+    function loadPgn(pgn)        { return bridge.loadPgn(pgn) }
+    function loadFen(fen)        { newGame(fen) }
     function setEnginePath(p)           { bridge.setEnginePath(p) }
     function setEnginePathBlack(p)      { bridge.setEnginePathBlack(p) }
     function setEnginePathWhiteGame(p)  { bridge.setEnginePathWhiteGame(p) }
