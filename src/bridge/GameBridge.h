@@ -2,6 +2,7 @@
 #define GAMEBRIDGE_H
 
 #include <QObject>
+#include <QCoreApplication>
 #include <QDebug>
 #include <QSettings>
 #include <QString>
@@ -17,6 +18,16 @@
 #include "../backend/Game.h"
 #include "../backend/notation.h"
 #include "../backend/uci_engine.h"
+
+// ---------------------------------------------------------------------------
+// Self-contained settings: store an INI file beside the executable instead of
+// writing to the registry (Windows) or ~/.config (Linux/macOS).
+inline QSettings makeSettings()
+{
+    return QSettings(
+        QCoreApplication::applicationDirPath() + "/settings.ini",
+        QSettings::IniFormat);
+}
 
 // ---------------------------------------------------------------------------
 // EngineWorker – owns UCIEngine and lives on m_engineThread.
@@ -451,7 +462,7 @@ public:
         m_lastMoveTo   = -1;
         buildCapturedLists();
         // Load last analysis position if one was saved.
-        QSettings s;
+        auto s = makeSettings();
         const QString pgn = s.value(QStringLiteral("analysisgame/pgn")).toString();
         if (!pgn.isEmpty()) {
             Game loaded;
@@ -471,7 +482,7 @@ public:
     // the current analysis position for the next session.
     Q_INVOKABLE void saveAnalysisPosition() {
         if (!m_isAnalysis) return;
-        QSettings s;
+        auto s = makeSettings();
         s.setValue(QStringLiteral("analysisgame/pgn"),
                    gamePgn(QStringLiteral("?"), QStringLiteral("?")));
     }

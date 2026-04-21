@@ -2,7 +2,9 @@
 #include "../backend/movegen.h"
 #include "../backend/notation.h"
 #include "../backend/types.h"
+#include <QCoreApplication>
 #include <QDebug>
+#include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QClipboard>
@@ -10,6 +12,25 @@
 #include <QTimer>
 #include <QVariantList>
 #include <QVariantMap>
+
+// Returns the path to the bundled Stockfish binary.
+// At runtime it is resolved relative to the executable directory;
+// if the assets folder hasn't been copied there yet (dev build) it
+// falls back to the compile-time source-tree ASSETS_PATH.
+static QString defaultStockfishPath()
+{
+    const QString runtimeAssets = QCoreApplication::applicationDirPath() + "/assets";
+#ifdef Q_OS_WIN
+    const QString relBin = QStringLiteral("/stockfish-win/stockfish-windows-x86-64-avx2.exe");
+#else
+    const QString relBin = QStringLiteral("/stockfish/stockfish-ubuntu-x86-64-avx2");
+#endif
+    QString path = runtimeAssets + relBin;
+    if (QFileInfo::exists(path))
+        return path;
+    // Dev fallback: source-tree assets
+    return QString::fromUtf8(ASSETS_PATH) + relBin;
+}
 
 // Initial piece counts on a fresh board (index = Piece enum value)
 static const int kInitialCount[13] = {
@@ -34,7 +55,7 @@ GameBridge::GameBridge(QObject* parent)
     qRegisterMetaType<UCISearchResult>();
 
     // Load persisted settings
-    QSettings settings;
+    auto settings = makeSettings();
     m_enginePath        = settings.value("engine/path",       QString()).toString();
     // m_enginePathBlack is intentionally not persisted – it is temporary (per-game only)
     m_engineThreads     = settings.value("engine/threads", 0).toInt();
@@ -67,7 +88,7 @@ GameBridge::GameBridge(QObject* parent)
     // menu background shows the last position.  Engine/clock are NOT started
     // here – that happens only when the user presses Continue (loadSavedGame).
     if (hasSavedGame()) {
-        QSettings s;
+        auto s = makeSettings();
         s.beginGroup(QStringLiteral("savedgame"));
         QString startFen = s.value(QStringLiteral("startFen")).toString();
         QString movesStr = s.value(QStringLiteral("moves")).toString();
@@ -362,7 +383,7 @@ void GameBridge::setEngineThreads(int n)
     m_engineThreads = n;
 
     // Persist
-    QSettings settings;
+    auto settings = makeSettings();
     if (n == 0)
         settings.remove("engine/threads");
     else
@@ -384,7 +405,7 @@ void GameBridge::setEngineElos(int whiteElo, int blackElo)
     m_whiteComputerElo = whiteElo;
     m_blackComputerElo = blackElo;
 
-    QSettings settings;
+    auto settings = makeSettings();
     if (whiteElo == 0) settings.remove("engine/elo/white"); else settings.setValue("engine/elo/white", whiteElo);
     if (blackElo == 0) settings.remove("engine/elo/black"); else settings.setValue("engine/elo/black", blackElo);
 
@@ -422,7 +443,7 @@ void GameBridge::setEnginePath(const QString& path)
     }
 
     // Persist to settings
-    QSettings settings;
+    auto settings = makeSettings();
     if (path.isEmpty())
         settings.remove("engine/path");
     else
@@ -483,6 +504,7 @@ void GameBridge::setBoardTheme(const QString& theme)
 {
     if (m_boardTheme == theme) return;
     m_boardTheme = theme;
+    makeSettings().setValue(QStringLiteral("themes/board"), theme);
     emit boardThemeChanged();
 }
 
@@ -490,6 +512,7 @@ void GameBridge::setPieceTheme(const QString& theme)
 {
     if (m_pieceTheme == theme) return;
     m_pieceTheme = theme;
+    makeSettings().setValue(QStringLiteral("themes/piece"), theme);
     emit pieceThemeChanged();
 }
 
@@ -528,7 +551,7 @@ void GameBridge::setComputerSide(int color)
 
     if (!m_engineReady) {
         // Determine which path to try first
-        const QString defaultPath = QString::fromUtf8(ASSETS_PATH "/stockfish/stockfish-ubuntu-x86-64-avx2");
+        const QString defaultPath = defaultStockfishPath();
         QStringList candidates;
         if (!m_enginePathWhiteGame.isEmpty())
             candidates << m_enginePathWhiteGame;
@@ -625,7 +648,7 @@ void GameBridge::setComputerSide(int color)
 
     // CvC with a dedicated second engine for black.
     // Effective path resolution: per-game override → settings path → bundled default.
-    const QString defaultPath = QString::fromUtf8(ASSETS_PATH "/stockfish/stockfish-ubuntu-x86-64-avx2");
+    const QString defaultPath = defaultStockfishPath();
     const QString effectiveBlackPath = !m_enginePathBlack.isEmpty() ? m_enginePathBlack
                                      : !m_enginePath.isEmpty()      ? m_enginePath
                                      : defaultPath;
@@ -871,7 +894,7 @@ void GameBridge::saveGame(const QString& whiteName, const QString& blackName,
     for (const Move& m : m_game.get_move_history())
         uciMoves << QString::fromStdString(move_to_uci(m));
 
-    QSettings s;
+    auto s = makeSettings();
     s.beginGroup(QStringLiteral("savedgame"));
     s.setValue(QStringLiteral("exists"),        true);
     s.setValue(QStringLiteral("startFen"),      QString::fromStdString(m_game.start_fen()));
@@ -913,13 +936,13 @@ void GameBridge::pauseForMenu()
 
 bool GameBridge::hasSavedGame() const
 {
-    QSettings s;
+    auto s = makeSettings();
     return s.value(QStringLiteral("savedgame/exists"), false).toBool();
 }
 
 QVariantMap GameBridge::loadSavedGame()
 {
-    QSettings s;
+    auto s = makeSettings();
     if (!s.value(QStringLiteral("savedgame/exists"), false).toBool())
         return {};
 
@@ -1002,19 +1025,19 @@ QVariantMap GameBridge::loadSavedGame()
 
 void GameBridge::clearSavedGame()
 {
-    QSettings s;
+    auto s = makeSettings();
     s.remove(QStringLiteral("savedgame"));
     emit hasSavedGameChanged();
 }
 
 QString GameBridge::savedBoardTheme() const
 {
-    return QSettings().value(QStringLiteral("themes/board"), QStringLiteral("brown")).toString();
+    return makeSettings().value(QStringLiteral("themes/board"), QStringLiteral("brown")).toString();
 }
 
 QString GameBridge::savedPieceTheme() const
 {
-    return QSettings().value(QStringLiteral("themes/piece"), QStringLiteral("cburnett")).toString();
+    return makeSettings().value(QStringLiteral("themes/piece"), QStringLiteral("cburnett")).toString();
 }
 // ---------------------------------------------------------------------------
 // Background analysis engine
@@ -1181,12 +1204,6 @@ void GameBridge::restartAnalysisIfRunning()
         m_analysisWorker->generation.fetch_add(1, std::memory_order_release);
         m_analysisWorker->stopSearch();
     }
-    // Immediately clear stale eval so the UI reacts to the move right away,
-    // without waiting for the engine to finish stopping (~100-800 ms).
-    m_analysisEvalCp    = 0;
-    m_analysisEvalMate  = false;
-    m_analysisEvalMateIn = 0;
-    emit analysisEvalChanged();
     if (!m_analysisTopLines.isEmpty()) {
         m_analysisTopLines.clear();
         emit analysisTopLinesChanged();

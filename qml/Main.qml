@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
-import QtCore
 
 Window {
     id: mainWindow
@@ -40,18 +39,13 @@ Window {
     Component.onCompleted: {
         minimumWidth  = targetWidth;  maximumWidth  = targetWidth
         minimumHeight = targetHeight; maximumHeight = targetHeight
+        activeBoardTheme = chessboard.savedBoardTheme()
+        activePieceTheme = chessboard.savedPieceTheme()
     }
 
-    // ── Persistent settings (Qt-managed ini file) ─────────────────────────
-    Settings {
-        id: appSettings
-        property string boardTheme: "brown"
-        property string pieceTheme: "cburnett"
-    }
-
-    // current theme state – driven by appSettings (survives restarts automatically)
-    property string activeBoardTheme: appSettings.boardTheme
-    property string activePieceTheme: appSettings.pieceTheme
+    // current theme state – loaded from settings.ini via C++ backend
+    property string activeBoardTheme: "brown"
+    property string activePieceTheme: "cburnett"
 
     // engine display name (updated once engine initialises)
     property string computerName: chessboard.engineName !== "" ? chessboard.engineName : "Computer"
@@ -361,8 +355,9 @@ Window {
                             property string wMove: chessboard.moveHistorySan[index * 2]     ?? ""
                             property string bMove: chessboard.moveHistorySan[index * 2 + 1] ?? ""
 
-                            readonly property bool wIsLast: (index * 2)     === chessboard.moveHistorySan.length - 1
-                            readonly property bool bIsLast: (index * 2 + 1) === chessboard.moveHistorySan.length - 1
+                            readonly property int  viewIdx:  chessboard.viewMoveIndex
+                            readonly property bool wActive: (index * 2)     === viewIdx - 1
+                            readonly property bool bActive: (index * 2 + 1) === viewIdx - 1
 
                             RowLayout {
                                 anchors { fill: parent; leftMargin: 6; rightMargin: 4 }
@@ -377,27 +372,27 @@ Window {
                                 Rectangle {
                                     Layout.fillWidth: true
                                     height: parent.height - 4
-                                    color: wIsLast ? "#3a5a3a" : "transparent"
+                                    color: wActive ? "#3a5a3a" : "transparent"
                                     radius: 2
                                     Text {
                                         anchors.centerIn: parent
                                         text: wMove
                                         color: "white"
                                         font.pixelSize: Math.round(squareSize * 0.18)
-                                        font.bold: wIsLast
+                                        font.bold: wActive
                                     }
                                 }
                                 Rectangle {
                                     Layout.fillWidth: true
                                     height: parent.height - 4
-                                    color: bIsLast ? "#3a5a3a" : "transparent"
+                                    color: bActive ? "#3a5a3a" : "transparent"
                                     radius: 2
                                     Text {
                                         anchors.centerIn: parent
                                         text: bMove
                                         color: "#ddd"
                                         font.pixelSize: Math.round(squareSize * 0.18)
-                                        font.bold: bIsLast
+                                        font.bold: bActive
                                     }
                                 }
                             }
@@ -654,8 +649,8 @@ Window {
             engineThreads   = chessboard.engineThreads
         }
         onApplied: {
-            appSettings.boardTheme     = settingsDialog.boardTheme
-            appSettings.pieceTheme     = settingsDialog.pieceTheme
+            chessboard.setBoardTheme(settingsDialog.boardTheme)
+            chessboard.setPieceTheme(settingsDialog.pieceTheme)
             mainWindow.activeBoardTheme = settingsDialog.boardTheme
             mainWindow.activePieceTheme = settingsDialog.pieceTheme
             chessboard.setEnginePath(settingsDialog.enginePath)

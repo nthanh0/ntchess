@@ -310,6 +310,7 @@ std::vector<UCISearchResult> UCIEngine::stream_multipv(
 {
     std::vector<UCISearchResult> current(n);
     int lastCallbackDepth = -1;
+    int currentSearchDepth = -1; // depth Stockfish is currently computing
 
     QElapsedTimer timer;
     timer.start();
@@ -331,14 +332,29 @@ std::vector<UCISearchResult> UCIEngine::stream_multipv(
             if (pvIdx >= n) pvIdx = n - 1;
             current[pvIdx] = parse_info_line(line, current[pvIdx]);
 
+            int depth = current[0].depth;
+
+            // When pvIdx == 0 transitions to a new depth, the previous depth completed
+            // with fewer than n PVs (common in check positions with limited legal moves).
+            // Fire the callback now so those positions still get live eval updates.
+            if (pvIdx == 0 && depth != currentSearchDepth) {
+                if (currentSearchDepth > lastCallbackDepth && currentSearchDepth > 0) {
+                    lastCallbackDepth = currentSearchDepth;
+                    on_update(current);
+                }
+                currentSearchDepth = depth;
+            }
+
             // Fire callback whenever we receive the last PV slot at a new depth.
             // pvIdx == n-1 (or pvIdx == 0 when n==1) means we have a full set.
-            int depth = current[0].depth;
             if (pvIdx == n - 1 && depth > lastCallbackDepth && depth > 0) {
                 lastCallbackDepth = depth;
                 on_update(current);
             }
         } else if (toks[0] == "bestmove") {
+            // Fire for any last depth that completed without a full n-PV set.
+            if (currentSearchDepth > lastCallbackDepth && currentSearchDepth > 0)
+                on_update(current);
             if (toks.size() >= 2) current[0].bestmove = toks[1];
             return current;
         }

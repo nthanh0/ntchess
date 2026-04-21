@@ -1,0 +1,89 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 23, "patch": 0 },
+
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+
+    {
+      "name": "windows-mingw-debug",
+      "displayName": "Windows – MinGW Debug",
+      "description": "Set QT_ROOT_DIR to your Qt MinGW kit root, e.g. C:/Qt/6.10.0/mingw_64",
+      "inherits": "base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT_DIR}",
+        "CMAKE_C_COMPILER":  "$env{QT_ROOT_DIR}/../../Tools/mingw1310_64/bin/gcc.exe",
+        "CMAKE_CXX_COMPILER":"$env{QT_ROOT_DIR}/../../Tools/mingw1310_64/bin/g++.exe"
+      },
+      "environment": {
+        "PATH": "$env{QT_ROOT_DIR}/bin;$env{QT_ROOT_DIR}/../../Tools/mingw1310_64/bin;$penv{PATH}"
+      }
+    },
+
+    {
+      "name": "windows-mingw-release",
+      "displayName": "Windows – MinGW Release",
+      "description": "Set QT_ROOT_DIR to your Qt MinGW kit root, e.g. C:/Qt/6.10.0/mingw_64",
+      "inherits": "windows-mingw-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+
+    {
+      "name": "linux-debug",
+      "displayName": "Linux – Debug",
+      "inherits": "base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+
+    {
+      "name": "linux-release",
+      "displayName": "Linux – Release",
+      "inherits": "linux-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+
+  "buildPresets": [
+    {
+      "name": "windows-mingw-debug",
+      "configurePreset": "windows-mingw-debug"
+    },
+    {
+      "name": "windows-mingw-release",
+      "configurePreset": "windows-mingw-release"
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug"
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release"
+    }
+  ]
+}

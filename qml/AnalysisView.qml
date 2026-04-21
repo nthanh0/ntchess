@@ -170,7 +170,7 @@ Item {
                 Menu {
                     id: panelMenu
                     y: stripeBtn.height + 4
-                    font.pixelSize: Math.round(analysisView.squareSize * 0.1)
+                    font.pixelSize: Math.round(analysisView.squareSize * 0.175)
 
                     background: Rectangle {
                         color: "#2a2a2a"; radius: 4; border.color: "#555"
@@ -545,8 +545,10 @@ Item {
                     Layout.preferredWidth:  1
                     Layout.preferredHeight: Math.round(analysisView.squareSize * 0.46)
                     Layout.alignment:       Qt.AlignVCenter
-                    Layout.leftMargin:      Math.round(analysisView.sp * 0.75)
-                    Layout.rightMargin:     Math.round(analysisView.sp * 0.75)
+                    // Left gap: sp*0.75 + half of (IconBtn width - icon rect width) so both
+                    // sides are visually equal (the "←" icon is centred inside its container)
+                    Layout.leftMargin:      Math.round((analysisView.squareSize * 1.2 - analysisView.squareSize * 0.65) / 2)
+                    Layout.rightMargin:     0
                     color: "#444"
                 }
 

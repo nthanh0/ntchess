@@ -28,8 +28,57 @@ qt_add_executable(appntchess
 )
 
 target_compile_definitions(appntchess PRIVATE
+    # Development fallback: when running from the build directory the assets
+    # haven't been copied yet, so the app falls back to this source-tree path.
     ASSETS_PATH="${CMAKE_SOURCE_DIR}/assets"
 )
+
+# ── Install rules ────────────────────────────────────────────────────────────
+# Copy the entire assets folder next to the installed executable so the app
+# is fully self-contained (no system-wide data directories needed).
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets DESTINATION .)
+
+if(WIN32)
+    # Locate windeployqt next to qmake / in the Qt bin directory.
+    find_program(WINDEPLOYQT windeployqt
+        HINTS "${Qt6_DIR}/../../../bin"
+              "$ENV{QT_ROOT_DIR}/bin"
+    )
+
+    if(WINDEPLOYQT)
+        # ── Post-build: copy Qt DLLs into the build directory ───────────────
+        # This lets you run the app directly from the build folder without
+        # having to run cmake --install first.
+        add_custom_command(TARGET appntchess POST_BUILD
+            COMMAND "${WINDEPLOYQT}"
+                    --no-translations
+                    --no-system-d3d-compiler
+                    --no-opengl-sw
+                    --qmldir "${CMAKE_SOURCE_DIR}/qml"
+                    "$<TARGET_FILE:appntchess>"
+            COMMENT "Running windeployqt (post-build)..."
+            VERBATIM
+        )
+
+        # ── Install: same thing for the install prefix ───────────────────────
+        install(CODE "
+            execute_process(
+                COMMAND \"${WINDEPLOYQT}\"
+                        --no-translations
+                        --no-system-d3d-compiler
+                        --no-opengl-sw
+                        --qmldir \"${CMAKE_SOURCE_DIR}/qml\"
+                        \"\${CMAKE_INSTALL_PREFIX}/appntchess.exe\"
+            )
+        ")
+    else()
+        message(WARNING
+            "windeployqt not found. Qt DLLs will not be bundled automatically.\n"
+            "Set QT_ROOT_DIR to your Qt MinGW kit root (e.g. C:/Qt/6.10.0/mingw_64) "
+            "or add the Qt bin directory to PATH."
+        )
+    endif()
+endif()
 
 target_include_directories(appntchess PRIVATE
     ${CMAKE_SOURCE_DIR}/src/bridge
@@ -65,7 +114,7 @@ target_link_libraries(appntchess
 )
 
 install(TARGETS appntchess
-    BUNDLE DESTINATION .
+    BUNDLE  DESTINATION .
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    RUNTIME DESTINATION .
 )

@@ -156,9 +156,10 @@ std::string move_to_san(Board& board, Move move) {
     }
     // Check or checkmate
     board.make_move(move);
-    if (is_in_check(board, get_color(move.piece_moved))) {
+    Color opponent = (get_color(move.piece_moved) == WHITE) ? BLACK : WHITE;
+    if (is_in_check(board, opponent)) {
         // Check if opponent has any legal moves
-        std::vector<Move> opponent_moves = generate_legal_moves(board, (get_color(move.piece_moved) == WHITE) ? BLACK : WHITE);
+        std::vector<Move> opponent_moves = generate_legal_moves(board, opponent);
         if (opponent_moves.empty()) {
             result += '#'; // Checkmate
         } else {
