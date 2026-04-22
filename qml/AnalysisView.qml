@@ -575,6 +575,16 @@ Item {
                     Layout.preferredWidth: Math.round(analysisView.squareSize * 1.2)
                 }
 
+                // ── Reset to start ────────────────────────────────────
+                IconBtn {
+                    text:       "⟳"
+                    tooltip:    "Reset to starting position"
+                    squareSize: analysisView.squareSize
+                    enabled:    analysisBoard.moveHistorySan.length > 0 || analysisBoard.viewMoveIndex >= 0
+                    onBtnClicked: resetConfirmDialog.open()
+                    Layout.preferredWidth: Math.round(analysisView.squareSize * 1.0)
+                }
+
                 // ── filler ─────────────────────────────────────────────
                 Item { Layout.fillWidth: true }
 
@@ -633,6 +643,25 @@ Item {
 
         onShowBestMoveArrowChanged: analysisView.showBestMoveArrow = showBestMoveArrow
         onMaxEngineDepthChanged:    analysisView.maxEngineDepth    = maxEngineDepth
+    }
+
+    // ── Reset confirm dialog ────────────────────────────────────────────────
+    Dialog {
+        id:          resetConfirmDialog
+        parent:      Overlay.overlay
+        anchors.centerIn: parent
+        title:       "Reset board?"
+        modal:       true
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        Label {
+            text: "Reset to starting position? All moves will be lost."
+            wrapMode: Text.WordWrap
+            width: parent ? parent.width : implicitWidth
+        }
+        onAccepted: {
+            analysisBoard.newGame()
+            analysisBoard.startAnalysis()
+        }
     }
 
     // ── Import dialog ───────────────────────────────────────────────────────

@@ -295,3 +295,73 @@ bool is_legal_move(Board &board, Move move) {
     }
     return false;
 }
+
+// ---------------------------------------------------------------------------
+// premove_targets
+// Returns all squares a piece on `square` could ever reach by its movement
+// pattern, regardless of blocking pieces, checks, or castling rights.
+// Used to determine valid premove highlight squares.
+// ---------------------------------------------------------------------------
+std::vector<int> premove_targets(const Board& board, int square)
+{
+    std::vector<int> targets;
+    Piece piece = board.get_piece(square);
+    if (piece == NO_PIECE) return targets;
+
+    PieceType pt    = get_type(piece);
+    Color     color = get_color(piece);
+    int file = square % 8;
+    int rank = square / 8;
+
+    auto add = [&](int f, int r) {
+        if (f >= 0 && f < 8 && r >= 0 && r < 8)
+            targets.push_back(get_index(f, r));
+    };
+    auto slide = [&](int df, int dr) {
+        int f = file + df, r = rank + dr;
+        while (f >= 0 && f < 8 && r >= 0 && r < 8) {
+            targets.push_back(get_index(f, r));
+            f += df; r += dr;
+        }
+    };
+
+    switch (pt) {
+        case KING:
+            for (int df : {-1,0,1})
+                for (int dr : {-1,0,1})
+                    if (df || dr) add(file+df, rank+dr);
+            // Castling target squares (always show regardless of rights)
+            if (file == 4) { add(6, rank); add(2, rank); }
+            break;
+        case QUEEN:
+            for (int df : {-1,0,1})
+                for (int dr : {-1,0,1})
+                    if (df || dr) slide(df, dr);
+            break;
+        case ROOK:
+            slide(1,0); slide(-1,0); slide(0,1); slide(0,-1);
+            break;
+        case BISHOP:
+            slide(1,1); slide(1,-1); slide(-1,1); slide(-1,-1);
+            break;
+        case KNIGHT:
+            for (int df : {-2,-1,1,2})
+                for (int dr : {-2,-1,1,2})
+                    if (std::abs(df) + std::abs(dr) == 3) add(file+df, rank+dr);
+            break;
+        case PAWN: {
+            int dir = (color == WHITE) ? 1 : -1;
+            // Forward 1
+            add(file, rank + dir);
+            // Forward 2 from starting rank
+            int startRank = (color == WHITE) ? 1 : 6;
+            if (rank == startRank) add(file, rank + 2*dir);
+            // Diagonal captures
+            add(file-1, rank + dir);
+            add(file+1, rank + dir);
+            break;
+        }
+        default: break;
+    }
+    return targets;
+}

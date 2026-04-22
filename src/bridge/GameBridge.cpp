@@ -293,6 +293,16 @@ QVariantList GameBridge::legalMovesFrom(int square) const
     return targets;
 }
 
+QVariantList GameBridge::premoveTargetsFrom(int square) const
+{
+    QVariantList targets;
+    Board boardCopy = m_game.get_board();
+    const std::vector<int> sqs = premove_targets(boardCopy, square);
+    for (int sq : sqs)
+        targets.append(sq);
+    return targets;
+}
+
 bool GameBridge::makeMove(int from, int to, int promotionPiece)
 {
     // If browsing history, truncate the game to the viewed position first,
@@ -1077,6 +1087,32 @@ void GameBridge::startAnalysis()
     m_analysisRunning = true;
     m_analysisPending = false;
 
+    // If the currently viewed position is terminal (checkmate/stalemate/draw),
+    // step the view back to the last ongoing position so the engine can start.
+    {
+        const Game& viewed = (m_viewIndex >= 0) ? m_viewGame : m_game;
+        if (viewed.get_game_status() != ONGOING) {
+            int histLen = (int)m_game.get_move_history().size();
+            if (m_viewIndex < 0 && histLen > 0) {
+                // Live head is terminal – step back one ply into history
+                m_viewIndex = histLen - 1;
+                buildViewGame();
+                emit positionChanged();
+            } else if (m_viewIndex > 0) {
+                m_viewIndex--;
+                buildViewGame();
+                emit positionChanged();
+            }
+            // If still terminal (e.g. only move was from a terminal start FEN),
+            // bail out and leave the engine stopped.
+            const Game& v2 = (m_viewIndex >= 0) ? m_viewGame : m_game;
+            if (v2.get_game_status() != ONGOING) {
+                m_analysisRunning = false;
+                return;
+            }
+        }
+    }
+
     const Game& g = (m_viewIndex >= 0) ? m_viewGame : m_game;
     snapshotPosition(g, m_analysisFen, m_analysisMoves, m_analysisTurn);
 
@@ -1145,7 +1181,10 @@ void GameBridge::startAnalysis()
         const QString fen0    = m_analysisFen;
         const QStringList mv0 = m_analysisMoves;
         const int     turn0   = m_analysisTurn;
-        QTimer::singleShot(0, m_analysisWorker, [this, epath, threads, fen0, mv0, turn0]() {
+        // Only mark the loop active if the position is actually searchable.
+        const Game& startG = (m_viewIndex >= 0) ? m_viewGame : m_game;
+        const bool positionOngoing = (startG.get_game_status() == ONGOING);
+        QTimer::singleShot(0, m_analysisWorker, [this, epath, threads, fen0, mv0, turn0, positionOngoing]() {
             bool ok = m_analysisWorker->startEngine(epath.toStdString(), threads);
             if (ok) {
                 m_analysisEngineReady = true;
@@ -1157,23 +1196,39 @@ void GameBridge::startAnalysis()
                         emit analysisEngineNameChanged();
                     }
                 }, Qt::QueuedConnection);
-                QMetaObject::invokeMethod(m_analysisWorker, "doAnalyze",
-                    Qt::QueuedConnection,
-                    Q_ARG(QString,     fen0),
-                    Q_ARG(QStringList, mv0),
-                    Q_ARG(int,         turn0));
+                // Don't search a terminal position – the loop will be kicked by
+                // restartAnalysisIfRunning once the user navigates to an ongoing position.
+                if (positionOngoing) {
+                    QMetaObject::invokeMethod(m_analysisWorker, "doAnalyze",
+                        Qt::QueuedConnection,
+                        Q_ARG(QString,     fen0),
+                        Q_ARG(QStringList, mv0),
+                        Q_ARG(int,         turn0));
+                } else {
+                    // Mark loop inactive from the main thread so restartAnalysisIfRunning
+                    // can re-kick it when the position becomes ongoing.
+                    QMetaObject::invokeMethod(this, [this]() {
+                        m_analysisLoopActive = false;
+                    }, Qt::QueuedConnection);
+                }
             } else {
                 qDebug() << "[Analysis] failed to start engine:" << epath;
             }
         });
-        m_analysisLoopActive = true;
+        m_analysisLoopActive = positionOngoing;
     } else {
-        m_analysisLoopActive = true;
-        QMetaObject::invokeMethod(m_analysisWorker, "doAnalyze",
-            Qt::QueuedConnection,
-            Q_ARG(QString,     m_analysisFen),
-            Q_ARG(QStringList, m_analysisMoves),
-            Q_ARG(int,         m_analysisTurn));
+        // Existing engine: only search if the position is not terminal.
+        const Game& startG2 = (m_viewIndex >= 0) ? m_viewGame : m_game;
+        if (startG2.get_game_status() == ONGOING) {
+            m_analysisLoopActive = true;
+            QMetaObject::invokeMethod(m_analysisWorker, "doAnalyze",
+                Qt::QueuedConnection,
+                Q_ARG(QString,     m_analysisFen),
+                Q_ARG(QStringList, m_analysisMoves),
+                Q_ARG(int,         m_analysisTurn));
+        }
+        // else: m_analysisLoopActive stays false; restartAnalysisIfRunning will
+        // kick the search once the user navigates to an ongoing position.
     }
 }
 

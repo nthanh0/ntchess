@@ -57,9 +57,9 @@ Item {
     function startAnalysis() { bridge.startAnalysis() }
     function stopAnalysis()  { bridge.stopAnalysis()  }
 
-    function stepBack()    { root.selectedSquare = -1; root.legalTargets = []; bridge.stepBack() }
-    function stepForward() { root.selectedSquare = -1; root.legalTargets = []; bridge.stepForward() }
-    function takeBack()    { root.selectedSquare = -1; root.legalTargets = []; bridge.takeBack() }
+    function stepBack()    { root.clearPremove(); bridge.stepBack() }
+    function stepForward() { root.clearPremove(); bridge.stepForward() }
+    function takeBack()    { root.clearPremove(); bridge.takeBack() }
     function initAsAnalysisBridge()  { bridge.initAsAnalysisBridge() }
     function saveAnalysisPosition()  { bridge.saveAnalysisPosition() }
 
@@ -86,6 +86,30 @@ Item {
             if (isGameOver)        gameEndSound.play()
             else if (wasCapture)   captureSound.play()
             else                   moveSound.play()
+
+            // ── Premove auto-execution ──────────────────────────────────────
+            // After the engine plays its move it's now the human's turn.
+            // Fire the premove on the next event-loop tick so the board state
+            // is fully updated before we attempt to execute it.
+            if (!isGameOver && root.hasPremove) {
+                const humanSide = 1 - root.computerSide
+                if (bridge.currentTurn === humanSide) {
+                    const pFrom  = root.premoveFrom
+                    const pTo    = root.premoveTo
+                    const pPromo = root.premovePromo
+                    root.premoveFrom = -1
+                    root.premoveTo   = -1
+                    Qt.callLater(function() {
+                        // Re-validate: the piece must still be on the from-square
+                        // and the target must be in the current legal moves.
+                        const legal = bridge.legalMovesFrom(pFrom)
+                        if (legal.indexOf(pTo) >= 0) {
+                            root._commitMove(pFrom, pTo, pPromo, true)
+                        }
+                        // else: premove became illegal – silently discard
+                    })
+                }
+            }
         }
         onPlayerResigned: function(loserColor) {
             root.playerResigned(loserColor)
@@ -181,6 +205,14 @@ Item {
         return pieceId >= 7 && pieceId <= 12
     }
 
+    // Like isOwnPiece but always checks the human's color (used in premove mode
+    // when it is the engine's turn and currentTurn == computerSide).
+    function isHumanPiece(pieceId) {
+        const humanColor = 1 - root.computerSide  // 0=white, 1=black
+        if (humanColor === 0) return pieceId >= 1 && pieceId <= 6
+        return pieceId >= 7 && pieceId <= 12
+    }
+
     // ── interaction state ───────────────────────────────────────────────────
     property int  selectedSquare: -1
     property var  legalTargets:   []
@@ -196,6 +228,26 @@ Item {
     property int  dragPieceId: 0
     property real dragX:       0
     property real dragY:       0
+
+    // ── premove state (HvC only) ─────────────────────────────────────────────
+    property int  premoveFrom:  -1
+    property int  premoveTo:    -1
+    property int  premovePromo: 2   // default: QUEEN
+    readonly property bool hasPremove: premoveFrom >= 0 && premoveTo >= 0
+
+    function clearPremove() {
+        root.premoveFrom    = -1
+        root.premoveTo      = -1
+        root.premovePromo   = 2
+        root.selectedSquare = -1
+        root.legalTargets   = []
+    }
+
+    // True when the engine is currently on move (HvC game)
+    function isEngineTurn() {
+        return root.computerSide >= 0 && root.computerSide <= 1
+               && bridge.currentTurn === root.computerSide
+    }
 
     // slide animation state
     property bool animating:   false
@@ -227,8 +279,10 @@ Item {
 
                 property int sq: squareIndex(index % 8, Math.floor(index / 8))
 
-                // Last-move highlight (subtle yellow)
-                color: (sq === bridge.lastMoveFrom || sq === bridge.lastMoveTo)
+                // Last-move highlight, premove highlight, and selection tint
+                color: (sq === root.premoveFrom || sq === root.premoveTo)
+                       ? "#557755cc"
+                       : (sq === bridge.lastMoveFrom || sq === bridge.lastMoveTo)
                        ? "#44eecc00"
                        : (sq === root.selectedSquare ? "#55ffdd00" : "transparent")
 
@@ -479,6 +533,7 @@ Item {
     MouseArea {
         anchors.fill: parent
         hoverEnabled: false
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
 
         property real pressX: 0
         property real pressY: 0
@@ -490,9 +545,15 @@ Item {
 
         onPressed: function(mouse) {
             if (!root.interactive || root.gameOver || root.animating) return
-            // Block input when it's the computer's turn
+            // Block input for computer-vs-computer
             if (root.computerSide === 2) return
-            if (root.computerSide >= 0 && bridge.currentTurn === root.computerSide) return
+
+            // Right-click always cancels premove (and current selection)
+            if (mouse.button === Qt.RightButton) {
+                root.clearPremove()
+                return
+            }
+
             pressX = mouse.x
             pressY = mouse.y
             mayDrag = false
@@ -502,14 +563,45 @@ Item {
             if (sq < 0) return
             const piece = bridge.pieces[sq]
 
-            // ── second click on a legal target → click-to-move with animation ──
+            // ── PREMOVE MODE: engine is current on move in HvC ────────────────
+            if (root.isEngineTurn()) {
+                // Second click on a premove-legal target → confirm premove
+                if (root.selectedSquare >= 0 && sq !== root.selectedSquare
+                        && root.legalTargets.indexOf(sq) >= 0) {
+                    root.setPremove(root.selectedSquare, sq, true)
+                    return
+                }
+
+                // Select human's piece for premove
+                if (root.isHumanPiece(piece)) {
+                    const reselect = (sq === root.selectedSquare)
+                    root.selectedSquare = sq
+                    root.legalTargets   = bridge.premoveTargetsFrom(sq)
+                    root.dragFromSq     = sq
+                    root.dragPieceId    = piece
+                    root.dragX = mouse.x
+                    root.dragY = mouse.y
+                    // Clear any existing premove when re-selecting a piece
+                    root.premoveFrom = -1
+                    root.premoveTo   = -1
+                    mayDrag = true
+                    if (!reselect) justSelected = true
+                } else {
+                    root.selectedSquare = -1
+                    root.legalTargets   = []
+                }
+                return
+            }
+
+            // ── NORMAL MOVE MODE ─────────────────────────────────────────────
+            // second click on a legal target → click-to-move with animation
             if (root.selectedSquare >= 0 && sq !== root.selectedSquare
                     && root.legalTargets.indexOf(sq) >= 0) {
                 root.executeMove(root.selectedSquare, sq, true)
                 return
             }
 
-            // ── own piece: select and prepare for potential drag ──────────────
+            // own piece: select and prepare for potential drag
             if (root.isOwnPiece(piece)) {
                 const reselect = (sq === root.selectedSquare)
                 root.selectedSquare = sq
@@ -547,12 +639,23 @@ Item {
             const toSq = root.pixelToSquare(mouse.x, mouse.y)
 
             if (wasDragging) {
-                // ── drag-and-drop: no slide animation ─────────────────────────
-                if (toSq >= 0 && toSq !== root.dragFromSq
-                        && root.legalTargets.indexOf(toSq) >= 0) {
-                    root.executeMove(root.dragFromSq, toSq, false)
+                if (root.isEngineTurn()) {
+                    // ── premove drag-and-drop ──────────────────────────────────
+                    if (toSq >= 0 && toSq !== root.dragFromSq
+                            && root.legalTargets.indexOf(toSq) >= 0) {
+                        root.setPremove(root.dragFromSq, toSq, false)
+                    }
+                    // Invalid drop: clear selection but keep any existing premove intact
+                    root.selectedSquare = -1
+                    root.legalTargets   = []
+                } else {
+                    // ── normal drag-and-drop: no slide animation ───────────────
+                    if (toSq >= 0 && toSq !== root.dragFromSq
+                            && root.legalTargets.indexOf(toSq) >= 0) {
+                        root.executeMove(root.dragFromSq, toSq, false)
+                    }
+                    // else: invalid drop → selection stays, user can still click a target
                 }
-                // else: invalid drop → selection stays, user can still click a target
             } else {
                 // ── pure click release ─────────────────────────────────────────
                 if (justSelected) {
@@ -562,7 +665,7 @@ Item {
                 }
                 justSelected = false
                 // Clicking the already-selected piece again → deselect
-                if (toSq === root.selectedSquare) {
+                if (!root.isEngineTurn() && toSq === root.selectedSquare) {
                     root.selectedSquare = -1
                     root.legalTargets   = []
                 }
@@ -574,6 +677,34 @@ Item {
     property int  _promoFromSq:   -1
     property int  _promoToSq:     -1
     property bool _promoAnimate:  false
+    property bool _promoIsPremove: false
+
+    // ── premove setter (called instead of executeMove when engine is on move) ─
+    // withAnimation is ignored (animation happens at execution time)
+    function setPremove(fromSq, toSq, withAnimation) {
+        const piece = bridge.pieces[fromSq]
+        // Promotion premove: open picker immediately; store result in premovePromo
+        const isPromo = (piece === 6 && toSq >= 56) || (piece === 12 && toSq < 8)
+        if (isPromo) {
+            root._promoFromSq   = fromSq
+            root._promoToSq     = toSq
+            root._promoAnimate  = true   // premoves always animate when executed
+            root._promoIsPremove = true
+            promotionPicker.sideColor = (piece === 6) ? 0 : 1
+            promotionPicker.promoCol  = toSq % 8
+            promotionPicker.open()
+            root.selectedSquare = -1
+            root.legalTargets   = []
+            root.dragFromSq     = -1
+            return
+        }
+        root.premoveFrom  = fromSq
+        root.premoveTo    = toSq
+        root.premovePromo = 2  // queen default (no promotion)
+        root.selectedSquare = -1
+        root.legalTargets   = []
+        root.dragFromSq     = -1
+    }
 
     // ── move execution ──────────────────────────────────────────────────────
     // withAnimation: true for click-to-move, false for drag-and-drop
@@ -582,9 +713,10 @@ Item {
         // Detect promotion: white pawn (6) to rank 8 (sq 56-63), black pawn (12) to rank 1 (sq 0-7)
         const isPromo = (piece === 6 && toSq >= 56) || (piece === 12 && toSq < 8)
         if (isPromo) {
-            root._promoFromSq  = fromSq
-            root._promoToSq    = toSq
-            root._promoAnimate = withAnimation
+            root._promoFromSq   = fromSq
+            root._promoToSq     = toSq
+            root._promoAnimate  = withAnimation
+            root._promoIsPremove = false
             promotionPicker.sideColor = (piece === 6) ? 0 : 1
             promotionPicker.promoCol  = toSq % 8
             promotionPicker.open()
@@ -704,9 +836,16 @@ Item {
                     onClicked: {
                         mouse.accepted = true
                         promotionPicker.close()
-                        root._commitMove(root._promoFromSq, root._promoToSq,
-                                         promotionPicker.pieceTypes[index],
-                                         root._promoAnimate)
+                        if (root._promoIsPremove) {
+                            // Store as premove with chosen promotion piece
+                            root.premoveFrom  = root._promoFromSq
+                            root.premoveTo    = root._promoToSq
+                            root.premovePromo = promotionPicker.pieceTypes[index]
+                        } else {
+                            root._commitMove(root._promoFromSq, root._promoToSq,
+                                             promotionPicker.pieceTypes[index],
+                                             root._promoAnimate)
+                        }
                     }
                 }
             }
@@ -722,6 +861,8 @@ Item {
         root.lastMoveTo     = -1
         root.animating      = false
         root.dragging       = false
+        root.premoveFrom    = -1
+        root.premoveTo      = -1
     }
     function setComputerSide(color) { root.computerSide = color; bridge.setComputerSide(color) }
     function setBoardTheme(t)    { bridge.boardTheme = t }

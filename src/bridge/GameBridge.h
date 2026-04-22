@@ -407,6 +407,7 @@ public:
 
     // Invokable from QML
     Q_INVOKABLE QVariantList legalMovesFrom(int square) const;
+    Q_INVOKABLE QVariantList premoveTargetsFrom(int square) const;
     Q_INVOKABLE bool         makeMove(int from, int to, int promotionPiece = 2 /*QUEEN*/);
     Q_INVOKABLE void         newGame(const QString& fen = QString());
     Q_INVOKABLE bool         loadPgn(const QString& pgnText);
@@ -473,6 +474,14 @@ public:
                     m_lastMoveTo   = m_game.get_move_history().back().square_to;
                 }
                 buildCapturedLists();
+                // If the saved position is terminal (checkmate/stalemate/draw),
+                // restore the view to the last ongoing position so that
+                // startAnalysis() can begin immediately on re-open.
+                if (m_game.get_game_status() != ONGOING &&
+                        !m_game.get_move_history().empty()) {
+                    m_viewIndex = static_cast<int>(m_game.get_move_history().size()) - 1;
+                    buildViewGame();
+                }
             }
         }
         emit positionChanged();

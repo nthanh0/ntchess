@@ -118,6 +118,18 @@ Window {
             anchors.fill: parent
             visible: appScreen === "menu"
 
+            // Title
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.top: parent.top
+                anchors.topMargin: Math.round(squareSize * 0.6)
+                text: "ntchess"
+                font.pixelSize: Math.round(squareSize * 0.55)
+                font.bold: true
+                color: "#e0e0e0"
+                font.letterSpacing: 2
+            }
+
             // Centred menu buttons
             Column {
                 anchors.centerIn: parent

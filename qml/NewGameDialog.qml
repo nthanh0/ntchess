@@ -435,7 +435,7 @@ Popup {
                         TextField {
                             id: blackEnginePathField
                             Layout.fillWidth: true
-                            placeholderText: "Leave empty to use same engine as white…"
+                            placeholderText: "Leave empty to use engine from settings…"
                             text: root.blackEnginePath
                             onTextChanged: root.blackEnginePath = text
                             background: Rectangle {
